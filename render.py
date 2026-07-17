@@ -347,18 +347,16 @@ def main():
         "-c", "copy", concat_path,
     ])
 
-    # 4. 生成3张不同角度标题的封面图（信息型/情绪型/悬念型），供人工挑选；失败不阻断主流程
+    # 4. 生成1张封面图（用AI给的第一个标题角度），失败不阻断主流程
     cover_titles = manifest.get("cover_titles") or []
-    if not cover_titles:
-        cover_titles = [topic]  # AI没给标题候选就退化成只用选题本身生成1张
+    cover_title_text = cover_titles[0] if cover_titles else topic
     cover_paths = []
-    for idx, title_text in enumerate(cover_titles[:3]):
-        cp = f"{WORKDIR}/cover_{idx}.jpg"
-        try:
-            make_cover(concat_path, title_text, cp)
-            cover_paths.append((title_text, cp))
-        except Exception as e:
-            print(f"第{idx+1}张封面生成失败，跳过：", e)
+    cp = f"{WORKDIR}/cover_0.jpg"
+    try:
+        make_cover(concat_path, cover_title_text, cp)
+        cover_paths.append((cover_title_text, cp))
+    except Exception as e:
+        print("封面生成失败，跳过：", e)
 
     # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"

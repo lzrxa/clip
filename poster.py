@@ -223,14 +223,26 @@ def build_poster_standard(manifest, bg_img, out_path):
     if departure_info:
         extra_h += 90
     canvas_h = 1920 + extra_h
+    has_extra_content = extra_h > 0
 
-    canvas = cover_resize(bg_img, W, canvas_h).convert("RGBA")
-
-    # 顶部渐深遮罩（衬托景点清单和右上角角标），底部渐深遮罩（衬托价格和footer）
-    add_vertical_gradient(canvas, (0, 0, W, 520), 140, 40)
-    add_vertical_gradient(canvas, (0, canvas_h - 620 - extra_h, W, canvas_h), 30, 190)
+    # 关键修复：照片不能被强行拉伸去撑满整个加长后的画布（那样画面会变形拉花）。
+    # 照片固定按1920高度做cover裁切，画布里多出来的部分用纯色深色背景承载文字内容，
+    # 效果类似"上半截真实照片 + 下半截深色内容卡片"，而不是把同一张图硬拉长。
+    canvas = Image.new("RGBA", (W, canvas_h), (18, 20, 24, 255))
+    photo = cover_resize(bg_img, W, 1920).convert("RGBA")
+    canvas.paste(photo, (0, 0))
 
     draw = ImageDraw.Draw(canvas, "RGBA")
+
+    # 顶部渐深遮罩（衬托景点清单和右上角角标）
+    add_vertical_gradient(canvas, (0, 0, W, 520), 140, 40)
+
+    if has_extra_content:
+        # 照片底部到下方纯色内容区之间做一个柔和过渡，不要生硬的分界线
+        add_vertical_gradient(canvas, (0, 1720, W, 1920), 0, 235)
+    else:
+        # 没有额外内容板块时，价格和footer还是直接叠在照片底部，需要原来的深色遮罩衬托
+        add_vertical_gradient(canvas, (0, canvas_h - 620, W, canvas_h), 30, 190)
 
     title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), ARTISTIC_FONT)
     f_loc = font([NOTO_BOLD], 30)
