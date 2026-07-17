@@ -8,8 +8,8 @@ from botocore.config import Config
 from PIL import Image, ImageDraw, ImageFont
 
 TASK_ID = os.environ["TASK_ID"]
-PAGES_BASE_URL = os.environ["PAGES_BASE_URL"].rstrip("/")
-RENDER_SECRET = os.environ["RENDER_SECRET"]
+PAGES_BASE_URL = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
+RENDER_SECRET = os.environ["RENDER_SECRET"].strip()
 R2_ACCOUNT_ID = os.environ["R2_ACCOUNT_ID"]
 R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
 R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]

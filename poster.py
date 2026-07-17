@@ -12,8 +12,8 @@ except ImportError:
     qrcode = None
 
 POSTER_ID = os.environ["POSTER_ID"]
-PAGES_BASE_URL = os.environ["PAGES_BASE_URL"].rstrip("/")
-RENDER_SECRET = os.environ["RENDER_SECRET"]
+PAGES_BASE_URL = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
+RENDER_SECRET = os.environ["RENDER_SECRET"].strip()
 R2_ACCOUNT_ID = os.environ["R2_ACCOUNT_ID"]
 R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
 R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]
@@ -41,8 +41,14 @@ def callback(status, poster_url=None, error=None):
         payload["poster_url"] = poster_url
     if error:
         payload["error"] = error[:2000]
+
+    callback_url = f"{PAGES_BASE_URL}/api/poster-callback"
     try:
-        requests.post(f"{PAGES_BASE_URL}/api/poster-callback", json=payload, timeout=30)
+        resp = requests.post(callback_url, json=payload, timeout=30)
+        print("回调地址：", callback_url)
+        print("回调 HTTP 状态：", resp.status_code)
+        print("回调响应内容：", resp.text[:500])
+        resp.raise_for_status()
     except Exception as e:
         print("回调失败:", e)
 
