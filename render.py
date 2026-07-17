@@ -131,6 +131,34 @@ def parse_srt(content):
     return cues
 
 
+def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
+    """中文字幕手动换行：ASS/libass的自动换行是按空格断词的，中文没有空格，
+    一整句会被当成一个不可拆分的词，超出画面宽度不会自动折行，而是直接溢出被裁掉。
+    这里按字号估算每行大概能放多少个字，优先在标点处断行，找不到合适标点就硬断。"""
+    usable_width = canvas_width - margin * 2
+    max_chars = max(4, int(usable_width / font_size))
+    if len(text) <= max_chars:
+        return text
+
+    break_chars = "，。！？、,."
+    lines = []
+    remaining = text
+    while len(remaining) > max_chars:
+        window = remaining[:max_chars + 1]
+        split_pos = -1
+        for i in range(len(window) - 1, -1, -1):
+            if window[i] in break_chars:
+                split_pos = i + 1
+                break
+        if split_pos <= 0:
+            split_pos = max_chars
+        lines.append(remaining[:split_pos])
+        remaining = remaining[split_pos:]
+    if remaining:
+        lines.append(remaining)
+    return "\\N".join(lines)
+
+
 def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True):
     """生成朴素字幕的ASS文件：统一颜色、统一字号、统一字体粗细，不做逐句变色/emoji/关键词高亮
 
@@ -166,7 +194,8 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     )
     lines = [header]
     for start, end, text in cues:
-        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,0,,{text}\n")
+        wrapped_text = wrap_subtitle_text(text, font_size)
+        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,0,,{wrapped_text}\n")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
     return len(cues)
