@@ -1,0 +1,2 @@
+# clip
+my clip/auto
