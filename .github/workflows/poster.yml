@@ -25,6 +25,11 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-noto-cjk
           pip install --quiet requests boto3 Pillow qrcode
 
+      - name: 下载海报标题艺术字体（站酷快乐体，Google Fonts官方OFL开源协议分发，免费商用）
+        run: |
+          mkdir -p fonts
+          curl -sL -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
+
       - name: 生成海报
         env:
           POSTER_ID: ${{ inputs.poster_id }}
