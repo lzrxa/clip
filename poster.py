@@ -1,6 +1,7 @@
 import os
 import sys
 import textwrap
+from io import BytesIO
 import requests
 import boto3
 from botocore.config import Config
@@ -166,6 +167,38 @@ def draw_pill(draw, xy, text, fnt, fill, text_fill, padding=(16, 8)):
     return rect
 
 
+def get_contact_image(manifest, size):
+    """右下角联系方式图片：有自定义图片（个人二维码截图/logo）优先用它，
+    没有就退回用wechat_link自动生成二维码，都没有就返回None"""
+    logo_url = manifest.get("logo_url")
+    if logo_url:
+        try:
+            resp = requests.get(logo_url, timeout=30)
+            resp.raise_for_status()
+            img = Image.open(BytesIO(resp.content)).convert("RGBA")
+            # 按比例缩放后居中裁剪成正方形，避免用户传的图片变形
+            w, h = img.size
+            side = min(w, h)
+            img = img.crop(((w - side) // 2, (h - side) // 2, (w + side) // 2, (h + side) // 2))
+            return img.resize((size, size))
+        except Exception as e:
+            print("自定义图片下载失败，退回二维码：", e)
+    wechat_link = manifest.get("wechat_link")
+    if wechat_link and qrcode:
+        return qrcode.make(wechat_link).resize((size, size)).convert("RGBA")
+    return None
+
+
+def draw_phone_number(draw, manifest, font, y_from_bottom):
+    """在底部画电话号码，位置在footer行下方，不与二维码重叠"""
+    phone = manifest.get("phone_number")
+    if not phone:
+        return
+    text = f"电话：{phone}"
+    draw.text((48, y_from_bottom), text, font=font, fill=(255, 255, 255, 230),
+               stroke_width=1, stroke_fill=(0, 0, 0, 180))
+
+
 def build_poster_standard(manifest, bg_img, out_path):
     canvas = cover_resize(bg_img, W, H).convert("RGBA")
 
@@ -263,11 +296,13 @@ def build_poster_standard(manifest, bg_img, out_path):
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 6), manifest["footer_text"], font=f_subtitle, fill=(255, 255, 255, 230))
 
-    # 二维码（可选）
-    if manifest.get("wechat_link") and qrcode:
-        qr_img = qrcode.make(manifest["wechat_link"]).resize((160, 160))
+    draw_phone_number(draw, manifest, f_footer, footer_y + 48)
+
+    # 联系方式图片（自定义logo/二维码截图优先，否则自动生成微信二维码）
+    contact_img = get_contact_image(manifest, 160)
+    if contact_img:
         qr_bg = Image.new("RGBA", (176, 176), (255, 255, 255, 255))
-        qr_bg.paste(qr_img.convert("RGBA"), (8, 8))
+        qr_bg.paste(contact_img, (8, 8))
         canvas.paste(qr_bg, (W - 220, H - 260), qr_bg)
 
     # 最底部装饰线
@@ -328,10 +363,12 @@ def build_poster_brand(manifest, bg_img, out_path):
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, H - 140), manifest["footer_text"], font=f_footer, fill=(255, 255, 255, 220))
 
-    if manifest.get("wechat_link") and qrcode:
-        qr_img = qrcode.make(manifest["wechat_link"]).resize((150, 150))
+    draw_phone_number(draw, manifest, f_footer, H - 105)
+
+    contact_img = get_contact_image(manifest, 150)
+    if contact_img:
         qr_bg = Image.new("RGBA", (166, 166), (255, 255, 255, 255))
-        qr_bg.paste(qr_img.convert("RGBA"), (8, 8))
+        qr_bg.paste(contact_img, (8, 8))
         canvas.paste(qr_bg, (W - 210, H - 250), qr_bg)
 
     canvas.convert("RGB").save(out_path, quality=92)
@@ -411,10 +448,12 @@ def build_poster_promo(manifest, bg_img, out_path):
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 4), manifest["footer_text"], font=f_footer, fill=(255, 255, 255, 220))
 
-    if manifest.get("wechat_link") and qrcode:
-        qr_img = qrcode.make(manifest["wechat_link"]).resize((140, 140))
+    draw_phone_number(draw, manifest, f_footer, footer_y + 34)
+
+    contact_img = get_contact_image(manifest, 140)
+    if contact_img:
         qr_bg = Image.new("RGBA", (156, 156), (255, 255, 255, 255))
-        qr_bg.paste(qr_img.convert("RGBA"), (8, 8))
+        qr_bg.paste(contact_img, (8, 8))
         canvas.paste(qr_bg, (W - 200, H - 200), qr_bg)
 
     canvas.convert("RGB").save(out_path, quality=92)

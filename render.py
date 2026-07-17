@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -52,12 +53,14 @@ def s3_client():
     )
 
 
-def callback(status, video_url=None, cover_url=None, error=None):
+def callback(status, video_url=None, cover_url=None, cover_options=None, error=None):
     payload = {"task_id": TASK_ID, "secret": RENDER_SECRET, "status": status}
     if video_url:
         payload["video_url"] = video_url
     if cover_url:
         payload["cover_url"] = cover_url
+    if cover_options:
+        payload["cover_options"] = cover_options
     if error:
         payload["error"] = error[:2000]
 
@@ -73,6 +76,111 @@ def callback(status, video_url=None, cover_url=None, error=None):
         resp.raise_for_status()
     except Exception as e:
         print("回调失败:", e)
+
+
+# ==================== 字幕美化：emoji自动插入 + 关键词高亮 + 逐句换色 ====================
+EMOJI_KEYWORDS = [
+    ("雪山", "🏔"), ("湖", "🌊"), ("草原", "🌾"), ("沙漠", "🏜"), ("星空", "✨"),
+    ("日出", "🌅"), ("日落", "🌇"), ("森林", "🌲"), ("花田", "🌸"), ("手抓饭", "🍚"),
+    ("美食", "🍖"), ("拍照", "📸"), ("自驾", "🚗"), ("公路", "🛣"), ("秋", "🍂"),
+    ("夏", "☀"), ("冬", "❄"), ("春", "🌱"), ("便宜", "💰"), ("划算", "💰"),
+    ("推荐", "👍"), ("打卡", "📍"), ("路线", "🗺"), ("小众", "💎"), ("避坑", "⚠"),
+]
+
+HIGHLIGHT_PATTERN = re.compile(r"(\d+%?|最[^，。！？,.!?]{0,4}|第一|唯一)")
+
+# 逐句轮换的强调色（RGB），第一个是默认白色
+SUBTITLE_PALETTE_RGB = [(255, 255, 255), (255, 214, 92), (120, 220, 255)]
+
+
+def rgb_to_ass_bgr(rgb):
+    """ASS字幕颜色是 BGR 顺序（不是常见的RGB），这里做一次转换"""
+    r, g, b = rgb
+    return f"&H{b:02X}{g:02X}{r:02X}&"
+
+
+def srt_time_to_sec(t):
+    h, m, s_ms = t.split(":")
+    s, ms = s_ms.split(",")
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+
+def sec_to_ass_time(sec):
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = sec % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def parse_srt(content):
+    """把 edge-tts 生成的 .srt 字幕解析成 (开始秒, 结束秒, 文本) 列表"""
+    blocks = re.split(r"\n\s*\n", content.strip())
+    cues = []
+    for block in blocks:
+        lines = block.strip().split("\n")
+        if len(lines) < 2:
+            continue
+        time_line_idx = None
+        for i, l in enumerate(lines):
+            if "-->" in l:
+                time_line_idx = i
+                break
+        if time_line_idx is None:
+            continue
+        start_str, end_str = [s.strip() for s in lines[time_line_idx].split("-->")]
+        text = " ".join(lines[time_line_idx + 1:]).strip()
+        if text:
+            cues.append((srt_time_to_sec(start_str), srt_time_to_sec(end_str), text))
+    return cues
+
+
+def add_emoji(text):
+    """按关键词表给字幕行前面加一个相关emoji，匹配到第一个就够了，不堆砌"""
+    for kw, emoji in EMOJI_KEYWORDS:
+        if kw in text:
+            return f"{emoji} {text}"
+    return text
+
+
+def highlight_line(text, restore_color_tag):
+    """把行内第一个数字/最字句/第一/唯一 用高亮色+放大做局部强调，其余文字保持逐句轮换色"""
+    m = HIGHLIGHT_PATTERN.search(text)
+    if not m:
+        return text
+    start, end = m.span()
+    before, mid, after = text[:start], text[start:end], text[end:]
+    highlight_color = rgb_to_ass_bgr((255, 90, 60))  # 强调色：橙红，抓眼球
+    return f"{before}{{\\c{highlight_color}\\fscx135\\fscy135}}{mid}{{\\r}}{restore_color_tag}{after}"
+
+
+def build_beautified_ass(srt_content, out_path):
+    """把普通srt字幕升级成带emoji+关键词高亮+逐句换色的ASS字幕文件"""
+    cues = parse_srt(srt_content)
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Noto Sans CJK SC,52,&HFFFFFF&,&HFFFFFF&,&H000000&,&H000000&,-1,0,0,0,100,100,0,0,"
+        "1,3,0,2,60,60,110,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines = [header]
+    for i, (start, end, text) in enumerate(cues):
+        color_rgb = SUBTITLE_PALETTE_RGB[i % len(SUBTITLE_PALETTE_RGB)]
+        color_tag = f"{{\\c{rgb_to_ass_bgr(color_rgb)}}}"
+        text_with_emoji = add_emoji(text)
+        text_final = color_tag + highlight_line(text_with_emoji, color_tag)
+        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,0,,{text_final}\n")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("".join(lines))
+    return len(cues)
+# ==================== 字幕美化函数结束 ====================
 
 
 def make_shot_clip(i, shot, duration):
@@ -169,14 +277,19 @@ def main():
         raise RuntimeError("该任务没有分镜数据")
     bgm_url = manifest.get("bgm_url")
     topic = manifest.get("topic") or "新疆旅行"
+    task_voice = manifest.get("tts_voice") or TTS_VOICE
+    bgm_volume = manifest.get("bgm_volume")
+    bgm_volume = float(bgm_volume) if bgm_volume is not None else 0.35
+    voice_volume = manifest.get("voice_volume")
+    voice_volume = float(voice_volume) if voice_volume is not None else 1.0
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
-    # 2. edge-tts 生成配音 + 真实语音时间轴字幕（免费）
+    # 2. edge-tts 生成配音 + 真实语音时间轴字幕（免费），语音优先用任务里选的那个
     audio_path = f"{WORKDIR}/audio.mp3"
     srt_path = f"{WORKDIR}/audio.srt"
     run([
-        "edge-tts", "--voice", TTS_VOICE,
+        "edge-tts", "--voice", task_voice,
         "--text", full_text,
         "--write-media", audio_path,
         "--write-subtitles", srt_path,
@@ -209,25 +322,41 @@ def main():
         "-c", "copy", concat_path,
     ])
 
-    # 4. 生成封面图（截一帧+叠加标题文字），失败不阻断主流程
-    cover_path = f"{WORKDIR}/cover.jpg"
-    cover_url = None
-    try:
-        make_cover(concat_path, topic, cover_path)
-    except Exception as e:
-        print("封面生成失败，跳过：", e)
-        cover_path = None
+    # 4. 生成3张不同角度标题的封面图（信息型/情绪型/悬念型），供人工挑选；失败不阻断主流程
+    cover_titles = manifest.get("cover_titles") or []
+    if not cover_titles:
+        cover_titles = [topic]  # AI没给标题候选就退化成只用选题本身生成1张
+    cover_paths = []
+    for idx, title_text in enumerate(cover_titles[:3]):
+        cp = f"{WORKDIR}/cover_{idx}.jpg"
+        try:
+            make_cover(concat_path, title_text, cp)
+            cover_paths.append((title_text, cp))
+        except Exception as e:
+            print(f"第{idx+1}张封面生成失败，跳过：", e)
 
-    # 5. 烧录字幕
+    # 5. 字幕美化：把 edge-tts 生成的普通srt升级成带emoji+关键词高亮+逐句换色的ASS字幕，再烧录
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
-    style = "FontName=Noto Sans CJK SC,FontSize=16,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment=2,MarginV=80"
+    ass_path = f"{WORKDIR}/audio.ass"
+    try:
+        with open(srt_path, "r", encoding="utf-8") as f:
+            srt_content = f.read()
+        cue_count = build_beautified_ass(srt_content, ass_path)
+        print(f"字幕美化完成，共 {cue_count} 条字幕（emoji+关键词高亮+逐句换色）")
+        subtitle_filter = f"subtitles={ass_path}"
+    except Exception as e:
+        # 美化失败就退回最基础的样式，不能因为字幕美化把整条视频搞挂
+        print("字幕美化失败，退回基础字幕样式：", e)
+        style = "FontName=Noto Sans CJK SC,FontSize=16,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment=2,MarginV=80"
+        subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
+
     run([
         "ffmpeg", "-y", "-i", concat_path,
-        "-vf", f"subtitles={srt_path}:force_style='{style}'",
+        "-vf", subtitle_filter,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path,
     ])
 
-    # 6. 准备背景音乐（找到就裁剪到配音时长并压低音量，找不到就跳过，不阻断流程）
+    # 6. 准备背景音乐：找到就裁剪到配音时长，加淡入淡出（开头1.5秒淡入，结尾2秒淡出）
     bgm_ready_path = None
     if bgm_url:
         try:
@@ -237,45 +366,60 @@ def main():
             with open(bgm_src_path, "wb") as f:
                 f.write(r.content)
             bgm_ready_path = f"{WORKDIR}/bgm.mp3"
+            fade_out_start = max(0.5, audio_duration - 2.0)
+            fade_out_dur = min(2.0, audio_duration - fade_out_start)
             run([
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", bgm_src_path,
-                "-t", str(audio_duration), "-af", "volume=0.18",
+                "-t", str(audio_duration),
+                "-af", f"volume={bgm_volume},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out_start}:d={fade_out_dur}",
                 bgm_ready_path,
             ])
         except Exception as e:
             print("背景音乐处理失败，跳过：", e)
             bgm_ready_path = None
 
-    # 7. 合入配音（+背景音乐）输出最终视频
+    # 7. 合入配音（+背景音乐）输出最终视频。
+    # 有背景音乐时用 sidechaincompress 做"人声闪避"：人声一出现就自动压低BGM音量，
+    # 人声停顿时BGM自动回升，不需要手动逐句调音量。
     final_path = f"{WORKDIR}/final.mp4"
     if bgm_ready_path:
         run([
             "ffmpeg", "-y", "-i", subtitled_path, "-i", audio_path, "-i", bgm_ready_path,
-            "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            "-filter_complex",
+            f"[1:a]volume={voice_volume}[voice_boosted];"
+            "[voice_boosted]asplit=2[voice_a][voice_b];"
+            "[2:a][voice_a]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=300[bgm_ducked];"
+            "[voice_b][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]",
             "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
         ])
     else:
         run([
             "ffmpeg", "-y", "-i", subtitled_path, "-i", audio_path,
+            "-filter_complex", f"[1:a]volume={voice_volume}[aout]",
+            "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
         ])
 
-    # 8. 上传视频（和封面，如果生成成功）到 R2
+    # 8. 上传视频（和最多3张封面）到 R2
     s3 = s3_client()
     video_key = f"videos/{TASK_ID}_final.mp4"
     s3.upload_file(final_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
     video_url = f"{R2_PUBLIC_BASE_URL}/{video_key}"
 
-    cover_url = None
-    if cover_path and os.path.exists(cover_path):
-        cover_key = f"videos/{TASK_ID}_cover.jpg"
-        s3.upload_file(cover_path, R2_BUCKET_NAME, cover_key, ExtraArgs={"ContentType": "image/jpeg"})
-        cover_url = f"{R2_PUBLIC_BASE_URL}/{cover_key}"
+    cover_options = []
+    for idx, (title_text, cp) in enumerate(cover_paths):
+        if not os.path.exists(cp):
+            continue
+        cover_key = f"videos/{TASK_ID}_cover_{idx}.jpg"
+        s3.upload_file(cp, R2_BUCKET_NAME, cover_key, ExtraArgs={"ContentType": "image/jpeg"})
+        cover_options.append({"title": title_text, "url": f"{R2_PUBLIC_BASE_URL}/{cover_key}"})
+
+    default_cover_url = cover_options[0]["url"] if cover_options else None
 
     # 9. 通知 Cloudflare 渲染完成
-    callback("succeeded", video_url=video_url, cover_url=cover_url)
-    print("完成，视频地址:", video_url, "封面地址:", cover_url)
+    callback("succeeded", video_url=video_url, cover_url=default_cover_url, cover_options=cover_options)
+    print("完成，视频地址:", video_url, "封面数量:", len(cover_options))
 
 
 if __name__ == "__main__":
