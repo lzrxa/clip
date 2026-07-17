@@ -8,7 +8,12 @@ from botocore.config import Config
 from PIL import Image, ImageDraw, ImageFont
 
 TASK_ID = os.environ["TASK_ID"]
-PAGES_BASE_URL = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
+_raw_base = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
+if _raw_base.startswith("http://"):
+    _raw_base = "https://" + _raw_base[len("http://"):]
+elif not _raw_base.startswith("https://"):
+    _raw_base = "https://" + _raw_base
+PAGES_BASE_URL = _raw_base
 RENDER_SECRET = os.environ["RENDER_SECRET"].strip()
 R2_ACCOUNT_ID = os.environ["R2_ACCOUNT_ID"]
 R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
@@ -59,6 +64,9 @@ def callback(status, video_url=None, cover_url=None, error=None):
     callback_url = f"{PAGES_BASE_URL}/api/render-callback"
     try:
         resp = requests.post(callback_url, json=payload, timeout=30)
+        if resp.history:
+            print("警告：这次请求发生了跳转，PAGES_BASE_URL可能配置有误：",
+                  " -> ".join(str(r.url) for r in resp.history) + " -> " + resp.url)
         print("回调地址：", callback_url)
         print("回调 HTTP 状态：", resp.status_code)
         print("回调响应内容：", resp.text[:500])
