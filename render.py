@@ -55,8 +55,14 @@ def callback(status, video_url=None, cover_url=None, error=None):
         payload["cover_url"] = cover_url
     if error:
         payload["error"] = error[:2000]
+
+    callback_url = f"{PAGES_BASE_URL}/api/render-callback"
     try:
-        requests.post(f"{PAGES_BASE_URL}/api/render-callback", json=payload, timeout=30)
+        resp = requests.post(callback_url, json=payload, timeout=30)
+        print("回调地址：", callback_url)
+        print("回调 HTTP 状态：", resp.status_code)
+        print("回调响应内容：", resp.text[:500])
+        resp.raise_for_status()
     except Exception as e:
         print("回调失败:", e)
 
