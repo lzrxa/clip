@@ -153,8 +153,19 @@ def highlight_line(text, restore_color_tag):
     return f"{before}{{\\c{highlight_color}\\fscx135\\fscy135}}{mid}{{\\r}}{restore_color_tag}{after}"
 
 
-def build_beautified_ass(srt_content, out_path):
-    """把普通srt字幕升级成带emoji+关键词高亮+逐句换色的ASS字幕文件"""
+def build_beautified_ass(srt_content, out_path, font_size=64, position="bottom"):
+    """把普通srt字幕升级成带emoji+关键词高亮+逐句换色的ASS字幕文件
+
+    font_size: 字号（数字越大字越大）
+    position: 'top' / 'middle' / 'bottom'，对应ASS的Alignment对齐方式
+    """
+    position_map = {
+        "top": (8, 90),      # Alignment=8 顶部居中
+        "middle": (5, 0),    # Alignment=5 垂直居中，MarginV此时不影响位置
+        "bottom": (2, 110),  # Alignment=2 底部居中（原来的默认位置）
+    }
+    alignment, margin_v = position_map.get(position, position_map["bottom"])
+
     cues = parse_srt(srt_content)
     header = (
         "[Script Info]\n"
@@ -165,8 +176,8 @@ def build_beautified_ass(srt_content, out_path):
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,Noto Sans CJK SC,52,&HFFFFFF&,&HFFFFFF&,&H000000&,&H000000&,-1,0,0,0,100,100,0,0,"
-        "1,3,0,2,60,60,110,1\n\n"
+        f"Style: Default,Noto Sans CJK SC,{font_size},&HFFFFFF&,&HFFFFFF&,&H000000&,&H000000&,-1,0,0,0,100,100,0,0,"
+        f"1,3,0,{alignment},60,60,{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -282,6 +293,9 @@ def main():
     bgm_volume = float(bgm_volume) if bgm_volume is not None else 0.35
     voice_volume = manifest.get("voice_volume")
     voice_volume = float(voice_volume) if voice_volume is not None else 1.0
+    subtitle_size = manifest.get("subtitle_size")
+    subtitle_size = int(subtitle_size) if subtitle_size else 64
+    subtitle_position = manifest.get("subtitle_position") or "bottom"
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -341,13 +355,15 @@ def main():
     try:
         with open(srt_path, "r", encoding="utf-8") as f:
             srt_content = f.read()
-        cue_count = build_beautified_ass(srt_content, ass_path)
+        cue_count = build_beautified_ass(srt_content, ass_path, font_size=subtitle_size, position=subtitle_position)
         print(f"字幕美化完成，共 {cue_count} 条字幕（emoji+关键词高亮+逐句换色）")
         subtitle_filter = f"subtitles={ass_path}"
     except Exception as e:
         # 美化失败就退回最基础的样式，不能因为字幕美化把整条视频搞挂
         print("字幕美化失败，退回基础字幕样式：", e)
-        style = "FontName=Noto Sans CJK SC,FontSize=16,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment=2,MarginV=80"
+        _pos_map = {"top": (8, 90), "middle": (5, 0), "bottom": (2, 110)}
+        _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
+        style = f"FontName=Noto Sans CJK SC,FontSize={subtitle_size},PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
         subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
 
     run([
@@ -356,7 +372,8 @@ def main():
         "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path,
     ])
 
-    # 6. 准备背景音乐：找到就裁剪到配音时长，加淡入淡出（开头1.5秒淡入，结尾2秒淡出）
+    # 6. 准备背景音乐：找到就裁剪到配音时长，按设定音量混入（不做淡入淡出/自动闪避，
+    # 保持简单直接的听感，这两个效果之前实际使用体验不好，已经去掉）
     bgm_ready_path = None
     if bgm_url:
         try:
@@ -366,30 +383,23 @@ def main():
             with open(bgm_src_path, "wb") as f:
                 f.write(r.content)
             bgm_ready_path = f"{WORKDIR}/bgm.mp3"
-            fade_out_start = max(0.5, audio_duration - 2.0)
-            fade_out_dur = min(2.0, audio_duration - fade_out_start)
             run([
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", bgm_src_path,
-                "-t", str(audio_duration),
-                "-af", f"volume={bgm_volume},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out_start}:d={fade_out_dur}",
+                "-t", str(audio_duration), "-af", f"volume={bgm_volume}",
                 bgm_ready_path,
             ])
         except Exception as e:
             print("背景音乐处理失败，跳过：", e)
             bgm_ready_path = None
 
-    # 7. 合入配音（+背景音乐）输出最终视频。
-    # 有背景音乐时用 sidechaincompress 做"人声闪避"：人声一出现就自动压低BGM音量，
-    # 人声停顿时BGM自动回升，不需要手动逐句调音量。
+    # 7. 合入配音（+背景音乐）输出最终视频。人声/BGM各自按设定音量直接混音。
     final_path = f"{WORKDIR}/final.mp4"
     if bgm_ready_path:
         run([
             "ffmpeg", "-y", "-i", subtitled_path, "-i", audio_path, "-i", bgm_ready_path,
             "-filter_complex",
-            f"[1:a]volume={voice_volume}[voice_boosted];"
-            "[voice_boosted]asplit=2[voice_a][voice_b];"
-            "[2:a][voice_a]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=300[bgm_ducked];"
-            "[voice_b][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            f"[1:a]volume={voice_volume}[voice_adj];"
+            "[voice_adj][2:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
             "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
         ])

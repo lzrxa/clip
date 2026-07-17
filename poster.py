@@ -32,6 +32,11 @@ WORKDIR = "poster_work"
 
 NOTO_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 NOTO_REGULAR = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+NOTO_BLACK = "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc"
+
+TITLE_FONT_MAP = {"regular": NOTO_REGULAR, "bold": NOTO_BOLD, "black": NOTO_BLACK}
+# 标题位置：不同版式各自的合理范围不一样，这里给标准版用的百分比参考值
+TITLE_POSITION_RATIO = {"top": 0.20, "middle": 0.42, "bottom": 0.62}
 
 
 def font(path_candidates, size):
@@ -208,10 +213,11 @@ def build_poster_standard(manifest, bg_img, out_path):
 
     draw = ImageDraw.Draw(canvas, "RGBA")
 
+    title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), NOTO_BOLD)
     f_loc = font([NOTO_BOLD], 30)
     f_badge = font([NOTO_BOLD], 24)
     f_tag = font([NOTO_BOLD], 26)
-    f_title = font([NOTO_BOLD], 108)
+    f_title = font([title_font_path], 108)
     f_subtitle = font([NOTO_REGULAR], 28)
     f_price_label = font([NOTO_BOLD], 26)
     f_price = font([NOTO_BOLD], 70)
@@ -236,7 +242,8 @@ def build_poster_standard(manifest, bg_img, out_path):
         badge_y = rect[3] + 16
 
     # 中部：高亮小标签 + 大标题 + 英文副标题
-    mid_y = int(H * 0.42)
+    title_ratio = TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.42)
+    mid_y = int(H * title_ratio)
     if manifest.get("highlight_word"):
         bbox = draw.textbbox((0, 0), manifest["highlight_word"], font=f_tag)
         tw = bbox[2] - bbox[0]
@@ -321,9 +328,10 @@ def build_poster_brand(manifest, bg_img, out_path):
     add_vertical_gradient(canvas, (0, H - 380, W, H), 10, 170)
     draw = ImageDraw.Draw(canvas, "RGBA")
 
+    title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), NOTO_BOLD)
     f_loc = font([NOTO_BOLD], 28)
     f_tag = font([NOTO_BOLD], 26)
-    f_title = font([NOTO_BOLD], 128)
+    f_title = font([title_font_path], 128)
     f_subtitle = font([NOTO_REGULAR], 30)
     f_footer = font([NOTO_REGULAR], 26)
 
@@ -333,7 +341,8 @@ def build_poster_brand(manifest, bg_img, out_path):
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
         y += 42
 
-    mid_y = int(H * 0.46)
+    title_ratio = TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.46)
+    mid_y = int(H * title_ratio)
     if manifest.get("highlight_word"):
         f_tagfont = f_tag
         bbox = draw.textbbox((0, 0), manifest["highlight_word"], font=f_tagfont)
@@ -383,7 +392,8 @@ def build_poster_promo(manifest, bg_img, out_path):
 
     f_loc = font([NOTO_BOLD], 26)
     f_tag = font([NOTO_BOLD], 24)
-    f_title = font([NOTO_BOLD], 74)
+    title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), NOTO_BOLD)
+    f_title = font([title_font_path], 74)
     f_hero_label = font([NOTO_BOLD], 32)
     f_hero_price = font([NOTO_BOLD], 168)
     f_hero_unit = font([NOTO_BOLD], 36)
