@@ -78,19 +78,16 @@ def callback(status, video_url=None, cover_url=None, cover_options=None, error=N
         print("回调失败:", e)
 
 
-# ==================== 字幕美化：emoji自动插入 + 关键词高亮 + 逐句换色 ====================
-EMOJI_KEYWORDS = [
-    ("雪山", "🏔"), ("湖", "🌊"), ("草原", "🌾"), ("沙漠", "🏜"), ("星空", "✨"),
-    ("日出", "🌅"), ("日落", "🌇"), ("森林", "🌲"), ("花田", "🌸"), ("手抓饭", "🍚"),
-    ("美食", "🍖"), ("拍照", "📸"), ("自驾", "🚗"), ("公路", "🛣"), ("秋", "🍂"),
-    ("夏", "☀"), ("冬", "❄"), ("春", "🌱"), ("便宜", "💰"), ("划算", "💰"),
-    ("推荐", "👍"), ("打卡", "📍"), ("路线", "🗺"), ("小众", "💎"), ("避坑", "⚠"),
-]
+# ==================== 字幕生成：简洁样式，颜色/字号/位置/粗细都可由用户在网页里选择 ====================
+# 之前版本做过"emoji自动插入+逐句换色+关键词高亮"，实际使用时emoji经常显示成乱码方块（字体没匹配上），
+# 逐句换色也显得杂乱，已经按反馈去掉，改成朴素干净、参数可控的样式。
 
-HIGHLIGHT_PATTERN = re.compile(r"(\d+%?|最[^，。！？,.!?]{0,4}|第一|唯一)")
-
-# 逐句轮换的强调色（RGB），第一个是默认白色
-SUBTITLE_PALETTE_RGB = [(255, 255, 255), (255, 214, 92), (120, 220, 255)]
+SUBTITLE_COLOR_MAP = {
+    "white": (255, 255, 255),
+    "yellow": (255, 214, 92),
+    "cyan": (120, 220, 255),
+    "red": (255, 90, 60),
+}
 
 
 def rgb_to_ass_bgr(rgb):
@@ -134,37 +131,23 @@ def parse_srt(content):
     return cues
 
 
-def add_emoji(text):
-    """按关键词表给字幕行前面加一个相关emoji，匹配到第一个就够了，不堆砌"""
-    for kw, emoji in EMOJI_KEYWORDS:
-        if kw in text:
-            return f"{emoji} {text}"
-    return text
-
-
-def highlight_line(text, restore_color_tag):
-    """把行内第一个数字/最字句/第一/唯一 用高亮色+放大做局部强调，其余文字保持逐句轮换色"""
-    m = HIGHLIGHT_PATTERN.search(text)
-    if not m:
-        return text
-    start, end = m.span()
-    before, mid, after = text[:start], text[start:end], text[end:]
-    highlight_color = rgb_to_ass_bgr((255, 90, 60))  # 强调色：橙红，抓眼球
-    return f"{before}{{\\c{highlight_color}\\fscx135\\fscy135}}{mid}{{\\r}}{restore_color_tag}{after}"
-
-
-def build_beautified_ass(srt_content, out_path, font_size=64, position="bottom"):
-    """把普通srt字幕升级成带emoji+关键词高亮+逐句换色的ASS字幕文件
+def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True):
+    """生成朴素字幕的ASS文件：统一颜色、统一字号、统一字体粗细，不做逐句变色/emoji/关键词高亮
 
     font_size: 字号（数字越大字越大）
-    position: 'top' / 'middle' / 'bottom'，对应ASS的Alignment对齐方式
+    position: 'top' / 'middle' / 'bottom'
+    color_key: SUBTITLE_COLOR_MAP 里的一个key，如 'white'/'yellow'/'cyan'/'red'
+    bold: 是否加粗
     """
     position_map = {
-        "top": (8, 90),      # Alignment=8 顶部居中
-        "middle": (5, 0),    # Alignment=5 垂直居中，MarginV此时不影响位置
-        "bottom": (2, 110),  # Alignment=2 底部居中（原来的默认位置）
+        "top": (8, 90),
+        "middle": (5, 0),
+        "bottom": (2, 110),
     }
     alignment, margin_v = position_map.get(position, position_map["bottom"])
+    color_rgb = SUBTITLE_COLOR_MAP.get(color_key, SUBTITLE_COLOR_MAP["white"])
+    color_tag = rgb_to_ass_bgr(color_rgb)
+    bold_flag = -1 if bold else 0
 
     cues = parse_srt(srt_content)
     header = (
@@ -176,22 +159,18 @@ def build_beautified_ass(srt_content, out_path, font_size=64, position="bottom")
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,Noto Sans CJK SC,{font_size},&HFFFFFF&,&HFFFFFF&,&H000000&,&H000000&,-1,0,0,0,100,100,0,0,"
+        f"Style: Default,Noto Sans CJK SC,{font_size},{color_tag},{color_tag},&H000000&,&H000000&,{bold_flag},0,0,0,100,100,0,0,"
         f"1,3,0,{alignment},60,60,{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     lines = [header]
-    for i, (start, end, text) in enumerate(cues):
-        color_rgb = SUBTITLE_PALETTE_RGB[i % len(SUBTITLE_PALETTE_RGB)]
-        color_tag = f"{{\\c{rgb_to_ass_bgr(color_rgb)}}}"
-        text_with_emoji = add_emoji(text)
-        text_final = color_tag + highlight_line(text_with_emoji, color_tag)
-        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,0,,{text_final}\n")
+    for start, end, text in cues:
+        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,0,,{text}\n")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
     return len(cues)
-# ==================== 字幕美化函数结束 ====================
+# ==================== 字幕生成函数结束 ====================
 
 
 def make_shot_clip(i, shot, duration):
@@ -294,8 +273,11 @@ def main():
     voice_volume = manifest.get("voice_volume")
     voice_volume = float(voice_volume) if voice_volume is not None else 1.0
     subtitle_size = manifest.get("subtitle_size")
-    subtitle_size = int(subtitle_size) if subtitle_size else 64
+    subtitle_size = int(subtitle_size) if subtitle_size else 76
     subtitle_position = manifest.get("subtitle_position") or "bottom"
+    subtitle_color = manifest.get("subtitle_color") or "white"
+    subtitle_bold = manifest.get("subtitle_bold")
+    subtitle_bold = True if subtitle_bold is None else bool(subtitle_bold)
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -349,21 +331,26 @@ def main():
         except Exception as e:
             print(f"第{idx+1}张封面生成失败，跳过：", e)
 
-    # 5. 字幕美化：把 edge-tts 生成的普通srt升级成带emoji+关键词高亮+逐句换色的ASS字幕，再烧录
+    # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
     ass_path = f"{WORKDIR}/audio.ass"
     try:
         with open(srt_path, "r", encoding="utf-8") as f:
             srt_content = f.read()
-        cue_count = build_beautified_ass(srt_content, ass_path, font_size=subtitle_size, position=subtitle_position)
-        print(f"字幕美化完成，共 {cue_count} 条字幕（emoji+关键词高亮+逐句换色）")
+        cue_count = build_subtitle_ass(
+            srt_content, ass_path, font_size=subtitle_size, position=subtitle_position,
+            color_key=subtitle_color, bold=subtitle_bold,
+        )
+        print(f"字幕生成完成，共 {cue_count} 条")
         subtitle_filter = f"subtitles={ass_path}"
     except Exception as e:
-        # 美化失败就退回最基础的样式，不能因为字幕美化把整条视频搞挂
-        print("字幕美化失败，退回基础字幕样式：", e)
+        # 生成失败就退回最基础的样式，不能因为字幕这一步把整条视频搞挂
+        print("字幕生成失败，退回基础字幕样式：", e)
         _pos_map = {"top": (8, 90), "middle": (5, 0), "bottom": (2, 110)}
         _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
-        style = f"FontName=Noto Sans CJK SC,FontSize={subtitle_size},PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
+        _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
+        _color_tag = rgb_to_ass_bgr(_color_rgb)
+        style = f"FontName=Noto Sans CJK SC,FontSize={subtitle_size},PrimaryColour={_color_tag},OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
         subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
 
     run([
