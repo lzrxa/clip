@@ -10,11 +10,13 @@ R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]
 R2_BUCKET_NAME = os.environ["R2_BUCKET_NAME"]
 
 # 和 _worker.js 里 VOICE_OPTIONS 保持一致，两边各自独立维护但内容要对得上
+# 和 _worker.js 里 VOICE_OPTIONS 保持一致，两边各自独立维护但内容要对得上。
+# 晓梦(XiaomengNeural)、晓睿(XiaoruiNeural) 这两个音色跟微软官方语音列表核对过名字没写错，
+# 但edge-tts对这两个音色持续"没有收到音频数据"，重试也没用，是这两个音色本身在edge-tts/
+# Azure那边的服务端问题，暂时从列表里去掉，等确认修复了再加回来
 VOICES = [
     "zh-CN-XiaoxiaoNeural",
     "zh-CN-XiaoyiNeural",
-    "zh-CN-XiaomengNeural",
-    "zh-CN-XiaoruiNeural",
     "zh-CN-YunxiNeural",
     "zh-CN-YunjianNeural",
     "zh-CN-YunyangNeural",
