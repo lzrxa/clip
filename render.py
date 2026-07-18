@@ -388,8 +388,22 @@ def main():
     s3.upload_file(final_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
     video_url = f"{R2_PUBLIC_BASE_URL}/{video_key}"
 
-    # 9. 通知 Cloudflare 渲染完成（视频生成完直接在任务流水线里预览播放，不再单独生成封面图）
-    callback("succeeded", video_url=video_url)
+    # 8.5 顺手截一帧做封面图（不叠加标题文字，就是单纯的画面截图，缩小到480宽）。
+    # 这张小图会被网页用作<video>标签的poster属性：任务流水线一打开，先加载的是这张几十KB的
+    # 小图，不用把每个视频开头那段数据都提前拉下来才能看到画面；真正的视频数据要等用户
+    # 点了播放才开始下载，首页打开的速度和省流量效果都会好很多。截图失败不影响视频本身。
+    cover_url = None
+    try:
+        cover_path = f"{WORKDIR}/cover.jpg"
+        run(["ffmpeg", "-y", "-ss", "0.8", "-i", final_path, "-frames:v", "1", "-vf", "scale=480:-1", cover_path])
+        cover_key = f"videos/{TASK_ID}_cover.jpg"
+        s3.upload_file(cover_path, R2_BUCKET_NAME, cover_key, ExtraArgs={"ContentType": "image/jpeg"})
+        cover_url = f"{R2_PUBLIC_BASE_URL}/{cover_key}"
+    except Exception as e:
+        print("封面截图失败，跳过（不影响视频本身）：", e)
+
+    # 9. 通知 Cloudflare 渲染完成
+    callback("succeeded", video_url=video_url, cover_url=cover_url)
     print("完成，视频地址:", video_url)
 
 
