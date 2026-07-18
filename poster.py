@@ -287,7 +287,7 @@ def build_poster_standard(manifest, bg_img, out_path):
     f_tag = font([NOTO_BOLD], 26)
     f_title = font([title_font_path, NOTO_BOLD], 108)
     f_subtitle = font([NOTO_REGULAR], 28)
-    f_section_head = font([NOTO_BLACK], 40)
+    f_section_head = font([NOTO_BLACK, NOTO_BOLD, NOTO_REGULAR], 40)
     f_section_item = font([NOTO_REGULAR], 30)
     f_price_label = font([NOTO_BOLD], 26)
     f_price = font([NOTO_BOLD], 70)
@@ -412,10 +412,11 @@ def build_poster_standard(manifest, bg_img, out_path):
     while dash_x < W - 60:
         draw.line([(dash_x, dash_y), (dash_x + 14, dash_y)], fill=(255, 255, 255, 140), width=2)
         dash_x += 24
-    bottom_text = "独家定制   100% 原创线路"
-    bbox = draw.textbbox((0, 0), bottom_text, font=f_footer)
+    bottom_text = safe_text(manifest.get("bottom_tagline") or "独家定制   100% 原创线路")
+    f_bottom_tag = font([NOTO_BOLD, NOTO_REGULAR], 30)
+    bbox = draw.textbbox((0, 0), bottom_text, font=f_bottom_tag)
     tw = bbox[2] - bbox[0]
-    draw.text(((W - tw) / 2, canvas_h - 70), bottom_text, font=f_footer, fill=(255, 255, 255, 200))
+    draw.text(((W - tw) / 2, canvas_h - 74), bottom_text, font=f_bottom_tag, fill=(255, 255, 255, 210))
 
     canvas.convert("RGB").save(out_path, quality=92)
 
