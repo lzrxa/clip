@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import textwrap
 from io import BytesIO
@@ -48,6 +49,29 @@ def font(path_candidates, size):
         if os.path.exists(p):
             return ImageFont.truetype(p, size)
     return ImageFont.load_default()
+
+
+# 之前海报上出现的那些黄色/白色小方块，是因为标题装饰符号（⊙、✦）不在 Noto Sans CJK 这套字体的
+# 字符集里，Pillow画不出对应字形，就画成了"缺字方块"。这里做一道统一的过滤：只保留中文汉字、
+# 常见中英文标点、ASCII字符、中间点这些确认能正常显示的字符，其余一律替换成空格——不管是
+# 我自己写死的装饰符号，还是用户在标题/亮点/备注这些自由文本框里不小心打进去的emoji、
+# 特殊符号，都会被过滤掉，从根上避免"缺字方块"再出现，而不是只修补已知的这一两处。
+_SAFE_TEXT_PATTERN = re.compile(
+    '[^'
+    '\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff'  # CJK统一表意文字（含扩展A、兼容区）
+    '\u3040-\u30ff\uac00-\ud7af'                # 日文假名、韩文（防止极少数场景混入也能显示）
+    '\u3000-\u303f\uff00-\uffef'                # 中文标点、全角符号
+    '\x20-\x7e'                                  # 基本ASCII可打印字符
+    '\u00b7'                                     # 中间点·（已经在这套字体里验证能正常显示）
+    ']'
+)
+
+
+def safe_text(s):
+    """把字符串里这套CJK字体渲染不出来的字符（emoji、生僻符号等）统一替换成空格。"""
+    if not s:
+        return s
+    return _SAFE_TEXT_PATTERN.sub(' ', str(s)).strip()
 
 
 def callback(status, poster_url=None, error=None):
@@ -203,7 +227,7 @@ def draw_phone_number(draw, manifest, font, y_from_bottom):
     phone = manifest.get("phone_number")
     if not phone:
         return
-    text = f"电话：{phone}"
+    text = f"电话：{safe_text(phone)}"
     draw.text((48, y_from_bottom), text, font=font, fill=(255, 255, 255, 230),
                stroke_width=1, stroke_fill=(0, 0, 0, 180))
 
@@ -260,13 +284,14 @@ def build_poster_standard(manifest, bg_img, out_path):
     # 左上角：景点清单
     y = 56
     for loc in manifest.get("locations") or []:
-        draw.text((48, y), f"⊙ {loc}", font=f_loc, fill=(255, 255, 255, 255),
+        draw.text((48, y), f"· {safe_text(loc)}", font=f_loc, fill=(255, 255, 255, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
         y += 46
 
     # 右上角：两个角标
     badge_y = 56
-    for text in filter(None, [manifest.get("team_size_text"), manifest.get("badge_text")]):
+    for raw_text in filter(None, [manifest.get("team_size_text"), manifest.get("badge_text")]):
+        text = safe_text(raw_text)
         bbox = draw.textbbox((0, 0), text, font=f_badge)
         tw = bbox[2] - bbox[0]
         x = W - 48 - tw - 32
@@ -278,13 +303,14 @@ def build_poster_standard(manifest, bg_img, out_path):
     title_ratio = TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.42)
     mid_y = int(1920 * title_ratio)
     if manifest.get("highlight_word"):
-        bbox = draw.textbbox((0, 0), manifest["highlight_word"], font=f_tag)
+        tag_text = safe_text(manifest["highlight_word"])
+        bbox = draw.textbbox((0, 0), tag_text, font=f_tag)
         tw = bbox[2] - bbox[0]
-        draw_pill(draw, ((W - tw - 32) // 2, mid_y), manifest["highlight_word"], f_tag,
+        draw_pill(draw, ((W - tw - 32) // 2, mid_y), tag_text, f_tag,
                   fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
         mid_y += 70
 
-    title = manifest.get("title") or ""
+    title = safe_text(manifest.get("title") or "")
     wrapped = textwrap.fill(title, width=6)
     for line in wrapped.split("\n"):
         bbox = draw.textbbox((0, 0), line, font=f_title)
@@ -294,7 +320,7 @@ def build_poster_standard(manifest, bg_img, out_path):
         mid_y += 130
 
     if manifest.get("subtitle_en"):
-        spaced = " ".join(list(manifest["subtitle_en"].replace(" ", "")))
+        spaced = " ".join(list(safe_text(manifest["subtitle_en"]).replace(" ", "")))
         bbox = draw.textbbox((0, 0), spaced, font=f_subtitle)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, mid_y + 20), spaced, font=f_subtitle, fill=(255, 255, 255, 230),
@@ -308,17 +334,17 @@ def build_poster_standard(manifest, bg_img, out_path):
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
         yy = y_start + 62
         for idx, item in enumerate(items, 1):
-            draw.text((48, yy), f"{idx}. {item}", font=f_section_item, fill=(255, 255, 255, 240),
+            draw.text((48, yy), f"{idx}. {safe_text(item)}", font=f_section_item, fill=(255, 255, 255, 240),
                        stroke_width=1, stroke_fill=(0, 0, 0, 200))
             yy += 46
         return yy + 20
 
     if highlights:
-        content_y = draw_section_list("✦ 体验亮点", highlights, content_y)
+        content_y = draw_section_list("【体验亮点】", highlights, content_y)
     if accommodations:
-        content_y = draw_section_list("✦ 尊享下榻", accommodations, content_y)
+        content_y = draw_section_list("【尊享下榻】", accommodations, content_y)
     if departure_info:
-        draw.text((48, content_y), departure_info, font=f_section_head, fill=(255, 255, 255, 245),
+        draw.text((48, content_y), safe_text(departure_info), font=f_section_head, fill=(255, 255, 255, 245),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
         content_y += 90
 
@@ -329,8 +355,8 @@ def build_poster_standard(manifest, bg_img, out_path):
         py = content_y if (highlights or accommodations or departure_info) else canvas_h - 500
         for i, tier in enumerate(tiers):
             cx = col_w * i + col_w / 2
-            label = tier.get("label", "")
-            price = str(tier.get("price", ""))
+            label = safe_text(tier.get("label", ""))
+            price = safe_text(str(tier.get("price", "")))
             bbox = draw.textbbox((0, 0), label, font=f_price_label)
             draw.text((cx - (bbox[2] - bbox[0]) / 2, py), label, font=f_price_label, fill=(255, 255, 255, 235))
             price_text = price
@@ -351,11 +377,12 @@ def build_poster_standard(manifest, bg_img, out_path):
     footer_y = canvas_h - 320
     fx = 48
     if manifest.get("footer_tag"):
-        rect = draw_pill(draw, (fx, footer_y), manifest["footer_tag"], f_tag,
+        footer_tag_text = safe_text(manifest["footer_tag"])
+        rect = draw_pill(draw, (fx, footer_y), footer_tag_text, f_tag,
                           fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
         fx = rect[2] + 16
     if manifest.get("footer_text"):
-        draw.text((fx, footer_y + 6), manifest["footer_text"], font=f_subtitle, fill=(255, 255, 255, 230))
+        draw.text((fx, footer_y + 6), safe_text(manifest["footer_text"]), font=f_subtitle, fill=(255, 255, 255, 230))
 
     draw_phone_number(draw, manifest, f_footer, footer_y + 48)
 
@@ -396,7 +423,7 @@ def build_poster_brand(manifest, bg_img, out_path):
 
     y = 56
     for loc in (manifest.get("locations") or [])[:6]:
-        draw.text((48, y), f"⊙ {loc}", font=f_loc, fill=(255, 255, 255, 255),
+        draw.text((48, y), f"· {safe_text(loc)}", font=f_loc, fill=(255, 255, 255, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
         y += 42
 
@@ -404,13 +431,14 @@ def build_poster_brand(manifest, bg_img, out_path):
     mid_y = int(H * title_ratio)
     if manifest.get("highlight_word"):
         f_tagfont = f_tag
-        bbox = draw.textbbox((0, 0), manifest["highlight_word"], font=f_tagfont)
+        tag_text = safe_text(manifest["highlight_word"])
+        bbox = draw.textbbox((0, 0), tag_text, font=f_tagfont)
         tw = bbox[2] - bbox[0]
-        draw_pill(draw, ((W - tw - 32) // 2, mid_y), manifest["highlight_word"], f_tagfont,
+        draw_pill(draw, ((W - tw - 32) // 2, mid_y), tag_text, f_tagfont,
                   fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
         mid_y += 74
 
-    title = manifest.get("title") or ""
+    title = safe_text(manifest.get("title") or "")
     wrapped = textwrap.fill(title, width=6)
     for line in wrapped.split("\n"):
         bbox = draw.textbbox((0, 0), line, font=f_title)
@@ -420,16 +448,17 @@ def build_poster_brand(manifest, bg_img, out_path):
         mid_y += 150
 
     if manifest.get("subtitle_en"):
-        spaced = " ".join(list(manifest["subtitle_en"].replace(" ", "")))
+        spaced = " ".join(list(safe_text(manifest["subtitle_en"]).replace(" ", "")))
         bbox = draw.textbbox((0, 0), spaced, font=f_subtitle)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, mid_y + 26), spaced, font=f_subtitle, fill=(255, 255, 255, 230),
                    stroke_width=1, stroke_fill=(0, 0, 0, 200))
 
     if manifest.get("footer_text"):
-        bbox = draw.textbbox((0, 0), manifest["footer_text"], font=f_footer)
+        footer_text = safe_text(manifest["footer_text"])
+        bbox = draw.textbbox((0, 0), footer_text, font=f_footer)
         tw = bbox[2] - bbox[0]
-        draw.text(((W - tw) / 2, H - 140), manifest["footer_text"], font=f_footer, fill=(255, 255, 255, 220))
+        draw.text(((W - tw) / 2, H - 140), footer_text, font=f_footer, fill=(255, 255, 255, 220))
 
     draw_phone_number(draw, manifest, f_footer, H - 105)
 
@@ -462,13 +491,13 @@ def build_poster_promo(manifest, bg_img, out_path):
 
     # 顶部：一行小景点清单（横排，节省空间给价格）
     if manifest.get("locations"):
-        line = "  ·  ".join(manifest["locations"][:5])
+        line = "  ·  ".join(safe_text(loc) for loc in manifest["locations"][:5])
         draw.text((48, 56), line, font=f_loc, fill=(255, 255, 255, 240),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
 
     # 标题（比标准版小，放在价格上方）
     title_y = 150
-    title = manifest.get("title") or ""
+    title = safe_text(manifest.get("title") or "")
     bbox = draw.textbbox((0, 0), title, font=f_title)
     tw = bbox[2] - bbox[0]
     draw.text(((W - tw) / 2, title_y), title, font=f_title, fill=(255, 255, 255, 255),
@@ -479,12 +508,12 @@ def build_poster_promo(manifest, bg_img, out_path):
     hero_y = H - 700
     if tiers:
         hero = tiers[0]
-        label_text = f"{hero.get('label', '')} 起"
+        label_text = f"{safe_text(hero.get('label', ''))} 起"
         bbox = draw.textbbox((0, 0), label_text, font=f_hero_label)
         draw.text(((W - (bbox[2] - bbox[0])) / 2, hero_y), label_text, font=f_hero_label, fill=(255, 255, 255, 230))
         hero_y += 50
 
-        price_text = str(hero.get("price", ""))
+        price_text = safe_text(str(hero.get("price", "")))
         bbox2 = draw.textbbox((0, 0), price_text, font=f_hero_price)
         price_w = bbox2[2] - bbox2[0]
         unit_text = "元/人"
@@ -504,18 +533,19 @@ def build_poster_promo(manifest, bg_img, out_path):
             col_w = W / n
             for i, tier in enumerate(others):
                 cx = col_w * i + col_w / 2
-                text = f"{tier.get('label', '')}  {tier.get('price', '')}元/人"
+                text = f"{safe_text(tier.get('label', ''))}  {safe_text(tier.get('price', ''))}元/人"
                 bbox = draw.textbbox((0, 0), text, font=f_price_label)
                 draw.text((cx - (bbox[2] - bbox[0]) / 2, hero_y), text, font=f_price_label, fill=(255, 255, 255, 220))
 
     footer_y = H - 130
     fx = 48
     if manifest.get("footer_tag"):
-        rect = draw_pill(draw, (fx, footer_y), manifest["footer_tag"], f_tag,
+        footer_tag_text = safe_text(manifest["footer_tag"])
+        rect = draw_pill(draw, (fx, footer_y), footer_tag_text, f_tag,
                           fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
         fx = rect[2] + 16
     if manifest.get("footer_text"):
-        draw.text((fx, footer_y + 4), manifest["footer_text"], font=f_footer, fill=(255, 255, 255, 220))
+        draw.text((fx, footer_y + 4), safe_text(manifest["footer_text"]), font=f_footer, fill=(255, 255, 255, 220))
 
     draw_phone_number(draw, manifest, f_footer, footer_y + 34)
 
