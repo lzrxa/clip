@@ -290,7 +290,7 @@ def build_poster_standard(manifest, bg_img, out_path):
                    stroke_width=1, stroke_fill=(0, 0, 0, 200))
 
     # 内容区从这里开始往下堆叠：体验亮点 -> 住宿亮点 -> 出发地 -> 价格 -> footer
-    content_y = canvas_h - extra_h - 500
+    content_y = canvas_h - 500
 
     def draw_section_list(heading, items, y_start):
         draw.text((48, y_start), heading, font=f_section_head, fill=(240, 210, 30, 255),
