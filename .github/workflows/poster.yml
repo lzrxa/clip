@@ -22,7 +22,7 @@ jobs:
       - name: 安装依赖（ffmpeg + 中文字体 + Pillow + 二维码库）
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra
           pip install --quiet requests boto3 Pillow qrcode
 
       - name: 下载海报标题艺术字体（站酷快乐体，Google Fonts官方OFL开源协议分发，免费商用）
