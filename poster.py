@@ -74,12 +74,20 @@ def safe_text(s):
     return _SAFE_TEXT_PATTERN.sub(' ', str(s)).strip()
 
 
+def redact_urls(text):
+    """把错误信息里任何完整URL都替换成占位符，避免真实的存储地址/服务器信息被存进数据库、
+    展示在网页上给用户看。GitHub Actions日志里print出来的原始信息不受影响。"""
+    if not text:
+        return text
+    return re.sub(r"https?://\S+", "[链接已隐藏]", str(text))
+
+
 def callback(status, poster_url=None, error=None):
     payload = {"poster_id": POSTER_ID, "secret": RENDER_SECRET, "status": status}
     if poster_url:
         payload["poster_url"] = poster_url
     if error:
-        payload["error"] = error[:2000]
+        payload["error"] = redact_urls(error)[:2000]
 
     callback_url = f"{PAGES_BASE_URL}/api/poster-callback"
     try:

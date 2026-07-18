@@ -40,6 +40,15 @@ def s3_client():
     )
 
 
+def redact_urls(text):
+    """把错误信息里任何完整URL都替换成占位符，避免真实的存储地址/服务器信息被存进数据库、
+    展示在网页上给用户看。GitHub Actions日志里print出来的原始信息不受影响（只有管理员能看到
+    Actions日志），这里只处理会被callback回传、最终显示在网页任务卡片上的error内容。"""
+    if not text:
+        return text
+    return re.sub(r"https?://\S+", "[链接已隐藏]", str(text))
+
+
 def callback(status, video_url=None, cover_url=None, cover_options=None, error=None):
     payload = {"task_id": TASK_ID, "secret": RENDER_SECRET, "status": status}
     if video_url:
@@ -49,7 +58,7 @@ def callback(status, video_url=None, cover_url=None, cover_options=None, error=N
     if cover_options:
         payload["cover_options"] = cover_options
     if error:
-        payload["error"] = error[:2000]
+        payload["error"] = redact_urls(error)[:2000]
 
     callback_url = f"{PAGES_BASE_URL}/api/render-callback"
     try:
