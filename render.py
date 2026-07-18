@@ -2,11 +2,9 @@ import os
 import re
 import subprocess
 import sys
-import textwrap
 import requests
 import boto3
 from botocore.config import Config
-from PIL import Image, ImageDraw, ImageFont
 
 TASK_ID = os.environ["TASK_ID"]
 _raw_base = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
@@ -24,26 +22,11 @@ R2_PUBLIC_BASE_URL = os.environ["R2_PUBLIC_BASE_URL"].rstrip("/")
 TTS_VOICE = os.environ.get("TTS_VOICE") or "zh-CN-XiaoxiaoNeural"
 
 WORKDIR = "work"
-# 封面标题用的字体：优先用 Noto Sans CJK 的 Black（最粗）字重，视觉效果比原来的 Bold 更醒目，
-# 依然是 SIL Open Font License 完全免费商用的字体，没有版权风险。找不到就依次退回 Bold/Regular，
-# 兼容还没跑过新版 workflow（还没装 fonts-noto-cjk-extra）的旧环境，不会因为字体缺失直接报错
-NOTO_FONT_CANDIDATES = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-]
 
 
 def run(cmd):
     print("+ " + " ".join(cmd))
     subprocess.run(cmd, check=True)
-
-
-def find_font():
-    for p in NOTO_FONT_CANDIDATES:
-        if os.path.exists(p):
-            return p
-    return None
 
 
 def s3_client():
@@ -259,44 +242,6 @@ def make_shot_clip(i, shot, duration):
     return clip_path
 
 
-def make_cover(concat_path, title_text, out_path):
-    """从合成好的画面里截一帧，叠加标题文字做封面图，标题优先用hook，没有就用选题本身。"""
-    raw_path = f"{WORKDIR}/cover_raw.jpg"
-    run(["ffmpeg", "-y", "-i", concat_path, "-ss", "0.8", "-frames:v", "1", raw_path])
-
-    img = Image.open(raw_path).convert("RGB")
-    draw = ImageDraw.Draw(img, "RGBA")
-    w, h = img.size
-
-    font_path = find_font()
-    font_size = 64
-    font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
-
-    wrapped = textwrap.fill(title_text, width=12)
-    lines = wrapped.split("\n")
-    line_height = int(font_size * 1.35)
-    block_height = line_height * len(lines) + 80
-
-    # 底部渐深遮罩，保证白字在任何画面背景上都清晰
-    overlay = Image.new("RGBA", (w, block_height), (0, 0, 0, 0))
-    odraw = ImageDraw.Draw(overlay)
-    for y in range(block_height):
-        alpha = int(160 * (y / block_height))
-        odraw.line([(0, y), (w, y)], fill=(0, 0, 0, alpha))
-    img.paste(overlay, (0, h - block_height), overlay)
-
-    y_text = h - block_height + 40
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        text_w = bbox[2] - bbox[0]
-        x = (w - text_w) / 2
-        draw.text((x, y_text), line, font=font, fill=(255, 255, 255, 255),
-                   stroke_width=3, stroke_fill=(0, 0, 0, 255))
-        y_text += line_height
-
-    img.save(out_path, quality=90)
-
-
 def main():
     os.makedirs(WORKDIR, exist_ok=True)
 
@@ -315,7 +260,6 @@ def main():
     if not shots:
         raise RuntimeError("该任务没有分镜数据")
     bgm_url = manifest.get("bgm_url")
-    topic = manifest.get("topic") or "新疆旅行"
     task_voice = manifest.get("tts_voice") or TTS_VOICE
     bgm_volume = manifest.get("bgm_volume")
     bgm_volume = float(bgm_volume) if bgm_volume is not None else 0.35
@@ -366,17 +310,6 @@ def main():
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", clip_list_path,
         "-c", "copy", concat_path,
     ])
-
-    # 4. 生成1张封面图（用AI给的第一个标题角度），失败不阻断主流程
-    cover_titles = manifest.get("cover_titles") or []
-    cover_title_text = cover_titles[0] if cover_titles else topic
-    cover_paths = []
-    cp = f"{WORKDIR}/cover_0.jpg"
-    try:
-        make_cover(concat_path, cover_title_text, cp)
-        cover_paths.append((cover_title_text, cp))
-    except Exception as e:
-        print("封面生成失败，跳过：", e)
 
     # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
@@ -449,25 +382,15 @@ def main():
             "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
         ])
 
-    # 8. 上传视频（和最多3张封面）到 R2
+    # 8. 上传视频到 R2
     s3 = s3_client()
     video_key = f"videos/{TASK_ID}_final.mp4"
     s3.upload_file(final_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
     video_url = f"{R2_PUBLIC_BASE_URL}/{video_key}"
 
-    cover_options = []
-    for idx, (title_text, cp) in enumerate(cover_paths):
-        if not os.path.exists(cp):
-            continue
-        cover_key = f"videos/{TASK_ID}_cover_{idx}.jpg"
-        s3.upload_file(cp, R2_BUCKET_NAME, cover_key, ExtraArgs={"ContentType": "image/jpeg"})
-        cover_options.append({"title": title_text, "url": f"{R2_PUBLIC_BASE_URL}/{cover_key}"})
-
-    default_cover_url = cover_options[0]["url"] if cover_options else None
-
-    # 9. 通知 Cloudflare 渲染完成
-    callback("succeeded", video_url=video_url, cover_url=default_cover_url, cover_options=cover_options)
-    print("完成，视频地址:", video_url, "封面数量:", len(cover_options))
+    # 9. 通知 Cloudflare 渲染完成（视频生成完直接在任务流水线里预览播放，不再单独生成封面图）
+    callback("succeeded", video_url=video_url)
+    print("完成，视频地址:", video_url)
 
 
 if __name__ == "__main__":
