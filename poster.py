@@ -214,22 +214,11 @@ def build_poster_standard(manifest, bg_img, out_path):
     departure_info = manifest.get("departure_info") or ""   # 如 "长沙直飞乌鲁木齐"
     tiers = manifest.get("price_tiers") or []
 
-    # 画布高度按内容动态撑高：填得越多，海报就越长，不会互相挤压
-    extra_h = 0
-    if highlights:
-        extra_h += 90 + len(highlights) * 46
-    if accommodations:
-        extra_h += 90 + len(accommodations) * 46
-    if departure_info:
-        extra_h += 90
-    canvas_h = 1920 + extra_h
-    has_extra_content = extra_h > 0
-
-    # 关键修复：照片不能被强行拉伸去撑满整个加长后的画布（那样画面会变形拉花）。
-    # 照片固定按1920高度做cover裁切，画布里多出来的部分用纯色深色背景承载文字内容，
-    # 效果类似"上半截真实照片 + 下半截深色内容卡片"，而不是把同一张图硬拉长。
-    canvas = Image.new("RGBA", (W, canvas_h), (18, 20, 24, 255))
-    photo = cover_resize(bg_img, W, 1920).convert("RGBA")
+    # 成品固定为 1080×1920（9:16）。不再因文案增加画布高度，避免海报被拉成长图。
+    canvas_h = H
+    has_extra_content = bool(highlights or accommodations or departure_info)
+    canvas = Image.new("RGBA", (W, H), (18, 20, 24, 255))
+    photo = cover_resize(bg_img, W, H).convert("RGBA")
     canvas.paste(photo, (0, 0))
 
     draw = ImageDraw.Draw(canvas, "RGBA")
@@ -307,7 +296,11 @@ def build_poster_standard(manifest, bg_img, out_path):
         draw.text((48, y_start), heading, font=f_section_head, fill=(240, 210, 30, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
         yy = y_start + 62
+        # 给价格和页脚预留固定空间，条目过多时只显示能容纳的部分，绝不拉长画布。
+        max_y = canvas_h - 590
         for idx, item in enumerate(items, 1):
+            if yy + 42 > max_y:
+                break
             draw.text((48, yy), f"{idx}. {item}", font=f_section_item, fill=(255, 255, 255, 240),
                        stroke_width=1, stroke_fill=(0, 0, 0, 200))
             yy += 46
