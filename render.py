@@ -24,7 +24,11 @@ R2_PUBLIC_BASE_URL = os.environ["R2_PUBLIC_BASE_URL"].rstrip("/")
 TTS_VOICE = os.environ.get("TTS_VOICE") or "zh-CN-XiaoxiaoNeural"
 
 WORKDIR = "work"
+# 封面标题用的字体：优先用 Noto Sans CJK 的 Black（最粗）字重，视觉效果比原来的 Bold 更醒目，
+# 依然是 SIL Open Font License 完全免费商用的字体，没有版权风险。找不到就依次退回 Bold/Regular，
+# 兼容还没跑过新版 workflow（还没装 fonts-noto-cjk-extra）的旧环境，不会因为字体缺失直接报错
 NOTO_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 ]
@@ -167,15 +171,26 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     color_key: SUBTITLE_COLOR_MAP 里的一个key，如 'white'/'yellow'/'cyan'/'red'
     bold: 是否加粗
     """
+    # 'middle' 之前用的是ASS的"5"（正中心）对齐方式，这种对齐是按文字块的几何中心来定位的——
+    # 一句话如果换行成1行还是2行，文字块整体高度不一样，"中心"对齐的结果就是每一句字幕的
+    # 上下位置都会跟着换行行数跳来跳去，看起来就是"一下子上、一下子下"。
+    # 改成跟 bottom 一样"从画面底部往上锚定"的方式（对齐方式"2"），只是把锚点位置挪到画面纵向
+    # 中部附近，这样换行再多行，也是从同一个固定基准线往上长，基准位置不会变，视觉上才是稳定的。
+    # 具体每一条字幕的锚点还会按这条字幕实际换行行数做微调（见下面循环里的 this_margin_v），
+    # 尽量让1行、2行、3行的字幕视觉中心都还是落在画面中部附近，而不是行数越多就整体往下坠。
     position_map = {
         "top": (8, 90),
-        "middle": (5, 0),
+        "middle": (2, 960),
         "bottom": (2, 110),
     }
     alignment, margin_v = position_map.get(position, position_map["bottom"])
     color_rgb = SUBTITLE_COLOR_MAP.get(color_key, SUBTITLE_COLOR_MAP["white"])
     color_tag = rgb_to_ass_bgr(color_rgb)
-    bold_flag = -1 if bold else 0
+    # 加粗时直接换用 Noto Sans CJK 的 Black（最粗）字重，比原来单纯给Bold字重再加ASS粗体标记
+    # 视觉效果更扎实清晰；这两个字重都是 SIL Open Font License 完全免费商用，没有版权顾虑。
+    # 不加粗则维持原来的常规字重不变。
+    font_name = "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
+    line_height = int(font_size * 1.2)
 
     cues = parse_srt(srt_content)
     header = (
@@ -187,7 +202,7 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,Noto Sans CJK SC,{font_size},{color_tag},{color_tag},&H000000&,&H000000&,{bold_flag},0,0,0,100,100,0,0,"
+        f"Style: Default,{font_name},{font_size},{color_tag},{color_tag},&H000000&,&H000000&,0,0,0,0,100,100,0,0,"
         f"1,3,0,{alignment},60,60,{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -195,7 +210,12 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     lines = [header]
     for start, end, text in cues:
         wrapped_text = wrap_subtitle_text(text, font_size)
-        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,0,,{wrapped_text}\n")
+        if position == "middle":
+            num_lines = wrapped_text.count("\\N") + 1
+            this_margin_v = max(50, margin_v - int((num_lines - 1) * line_height / 2))
+        else:
+            this_margin_v = 0  # 0表示沿用Style里的默认MarginV，不做逐条覆盖
+        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,{this_margin_v},,{wrapped_text}\n")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
     return len(cues)
@@ -373,11 +393,15 @@ def main():
     except Exception as e:
         # 生成失败就退回最基础的样式，不能因为字幕这一步把整条视频搞挂
         print("字幕生成失败，退回基础字幕样式：", e)
-        _pos_map = {"top": (8, 90), "middle": (5, 0), "bottom": (2, 110)}
+        # "middle"这里也用跟主路径一样的"从底部往上锚定"方式，理由跟build_subtitle_ass里注释的一样：
+        # 真正的正中心对齐在换行行数不一致时会显得位置来回跳。这个兜底路径没法像主路径那样逐条
+        # 微调，只能给一个折中的固定锚点，但至少比之前的"5"（正中心）稳定
+        _pos_map = {"top": (8, 90), "middle": (2, 850), "bottom": (2, 110)}
         _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
         _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
         _color_tag = rgb_to_ass_bgr(_color_rgb)
-        style = f"FontName=Noto Sans CJK SC,FontSize={subtitle_size},PrimaryColour={_color_tag},OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
+        _font_name = "Noto Sans CJK SC Black" if subtitle_bold else "Noto Sans CJK SC"
+        style = f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
         subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
 
     run([
