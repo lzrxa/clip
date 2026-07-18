@@ -241,8 +241,13 @@ def draw_phone_number(draw, manifest, font, y_from_bottom):
 
 
 def build_poster_standard(manifest, bg_img, out_path):
-    highlights = manifest.get("highlights") or []          # 体验亮点列表，如 ["赠送草原民谣音乐会", "轻旅拍", ...]
-    accommodations = manifest.get("accommodations") or []   # 住宿亮点列表
+    highlights = manifest.get("highlights") or []          # 亮点列表，标题文字由 highlights_label 决定
+    accommodations = manifest.get("accommodations") or []   # 第二组列表，标题文字由 accommodations_label 决定
+    # 这两组列表原本是给旅游海报设计的（"体验亮点"/"尊享下榻"），音乐培训这类其他领域的海报
+    # 需要不一样的标题（比如"教学亮点"/"学员成果"），由Worker那边按海报的domain传过来，
+    # 这里给个旅游语境的默认值，防止manifest没传这两个字段时崩掉
+    highlights_label = manifest.get("highlights_label") or "体验亮点"
+    accommodations_label = manifest.get("accommodations_label") or "尊享下榻"
     departure_info = manifest.get("departure_info") or ""   # 如 "长沙直飞乌鲁木齐"
     tiers = manifest.get("price_tiers") or []
 
@@ -348,9 +353,9 @@ def build_poster_standard(manifest, bg_img, out_path):
         return yy + 20
 
     if highlights:
-        content_y = draw_section_list("【体验亮点】", highlights, content_y)
+        content_y = draw_section_list(f"【{safe_text(highlights_label)}】", highlights, content_y)
     if accommodations:
-        content_y = draw_section_list("【尊享下榻】", accommodations, content_y)
+        content_y = draw_section_list(f"【{safe_text(accommodations_label)}】", accommodations, content_y)
     if departure_info:
         draw.text((48, content_y), safe_text(departure_info), font=f_section_head, fill=(255, 255, 255, 245),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
