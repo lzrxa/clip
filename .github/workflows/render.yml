@@ -22,7 +22,7 @@ jobs:
       - name: 安装依赖（ffmpeg + 中文字体 + edge-tts + 上传/回调所需库）
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-color-emoji
           pip install --quiet edge-tts requests boto3 Pillow
 
       - name: 执行渲染
