@@ -22,6 +22,7 @@ R2_PUBLIC_BASE_URL = os.environ["R2_PUBLIC_BASE_URL"].rstrip("/")
 TTS_VOICE = os.environ.get("TTS_VOICE") or "zh-CN-XiaoxiaoNeural"
 
 WORKDIR = "work"
+FONTS_DIR = "fonts"  # render.yml会把站酷快乐体下载到这个目录，跟poster.py用的是同一套约定
 
 
 def run(cmd):
@@ -83,6 +84,24 @@ SUBTITLE_COLOR_MAP = {
     "yellow": (255, 214, 92),
     "cyan": (120, 220, 255),
     "red": (255, 90, 60),
+}
+
+# 字幕字体两个选项："标准黑体"是Noto Sans CJK的最粗字重，规规矩矩、清晰易读；"活泼艺术字"是
+# 站酷快乐体（跟海报标题用的是同一份字体，Google Fonts官方OFL开源协议分发，免费商用），
+# 圆润饱满，短视频平台上常见的那种"更漂亮"的字幕大多是这类风格的字体，不是靠描边/阴影做出来的
+def resolve_subtitle_font(font_style, bold):
+    if font_style == "artistic":
+        return "ZCOOL KuaiLe"  # 站酷快乐体本身只有一个常规字重，没有"加粗"这个概念，bold参数对它不生效
+    return "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
+
+
+# 字幕背景框的几个配色方案：黑色半透明是原来那款，低调百搭；后面三个是仿照新闻类账号常见的
+# "色块贴片"标题条效果（黄底黑字/白底黑字/蓝底白字），色块是不透明的实色，视觉冲击力更强
+SUBTITLE_BOX_SCHEMES = {
+    "black": {"back": "&H80000000&", "text_override": None},
+    "yellow": {"back": "&H0022D4FC&", "text_override": (20, 20, 20)},
+    "white_box": {"back": "&H00FFFFFF&", "text_override": (20, 20, 20)},
+    "blue": {"back": "&H00C46A2E&", "text_override": (255, 255, 255)},
 }
 
 
@@ -199,7 +218,7 @@ TITLE_CAPTION_COLOR_SCHEMES = {
 }
 
 
-def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, color_scheme="gold"):
+def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, color_scheme="gold", font_style="standard"):
     """开头顶部大字标题字幕（悬念式大标题样式）：仿照新闻/热门短视频账号常见的开头字幕——
     多行文字叠在画面顶部，两色逐行交替（配色方案可选，见TITLE_CAPTION_COLOR_SCHEMES），
     加粗+黑色描边，只在视频最开头这几秒出现一次，之后自动消失，不会跟下面逐句解说的字幕
@@ -209,7 +228,7 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, col
     """
     if not lines:
         return False
-    font_name = "Noto Sans CJK SC Black"
+    font_name = resolve_subtitle_font(font_style, True)
     primary_rgb, secondary_rgb = TITLE_CAPTION_COLOR_SCHEMES.get(color_scheme, TITLE_CAPTION_COLOR_SCHEMES["gold"])
     white_tag = rgb_to_ass_bgr(primary_rgb)
     gold_tag = rgb_to_ass_bgr(secondary_rgb)
@@ -267,7 +286,7 @@ def apply_number_highlight(text, base_color_tag, highlight_color_tag):
 
 
 def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True,
-                        highlight_numbers=True, bg_box=False):
+                        highlight_numbers=True, bg_box=False, font_style="standard", box_scheme="black"):
     """生成逐句解说字幕的ASS文件
 
     font_size: 字号（数字越大字越大）
@@ -277,7 +296,10 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     highlight_numbers: 是否把句子里的数字/百分比自动高亮成金色，其余文字保持统一颜色不变——
         这不是"逐句变色"（整句话换颜色），是"句子里的数字单独换颜色，其余文字不变"，
         两者是完全不同的效果，数字高亮更精准、更不容易出问题
-    bg_box: 是否给字幕加一块半透明背景框（更适合背景比较杂乱、文字描边也压不住的素材）
+    bg_box: 是否给字幕加一块背景框（更适合背景比较杂乱、文字描边也压不住的素材）
+    font_style: 'standard'（Noto Sans CJK黑体，规矩清晰）/ 'artistic'（站酷快乐体，圆润饱满，
+        短视频平台常见的"更漂亮"字幕大多是这类风格，跟海报标题是同一份字体）
+    box_scheme: bg_box开启时用哪种配色，SUBTITLE_BOX_SCHEMES里的一个key
     """
     # 'middle' 之前用的是ASS的"5"（正中心）对齐方式，这种对齐是按文字块的几何中心来定位的——
     # 一句话如果换行成1行还是2行，文字块整体高度不一样，"中心"对齐的结果就是每一句字幕的
@@ -293,18 +315,22 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     }
     alignment, margin_v = position_map.get(position, position_map["bottom"])
     color_rgb = SUBTITLE_COLOR_MAP.get(color_key, SUBTITLE_COLOR_MAP["white"])
+    box_info = SUBTITLE_BOX_SCHEMES.get(box_scheme, SUBTITLE_BOX_SCHEMES["black"])
+    # 背景框选了黄底/白底这类浅色方案的时候，文字还用原来的颜色（比如黄色）会跟浅色底几乎融为
+    # 一体看不清，这种情况下强制把文字换成方案自带的对比色（黑字或白字），不受用户选的"字幕颜色"
+    # 影响；黑色半透明底框不存在这个问题，文字颜色还是照用户选的来
+    if bg_box and box_info["text_override"]:
+        color_rgb = box_info["text_override"]
     color_tag = rgb_to_ass_bgr(color_rgb)
     highlight_tag = rgb_to_ass_bgr((255, 204, 0))  # 数字高亮固定用金色，跟标题字幕的强调色是同一个色系，风格统一
-    # 加粗时直接换用 Noto Sans CJK 的 Black（最粗）字重，比原来单纯给Bold字重再加ASS粗体标记
-    # 视觉效果更扎实清晰；这两个字重都是 SIL Open Font License 完全免费商用，没有版权顾虑。
-    # 不加粗则维持原来的常规字重不变。
-    font_name = "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
+    font_name = resolve_subtitle_font(font_style, bold)
     # BorderStyle=1是"文字+描边"（默认样式）；BorderStyle=3是"文字+一块实心底色框"，
     # 加了背景框之后描边就不需要了（框本身已经能保证在任何背景下都看得清），Outline/Shadow
-    # 这两个数值在BorderStyle=3下含义会变成"背景框的内边距/投影"，这里给了比较克制的数值
+    # 这两个数值在BorderStyle=3下含义会变成"背景框的内边距/投影"，这里给了比较克制的数值。
+    # 不加背景框的描边粗细从3调到4，配合"活泼艺术字"这类更饱满的字体看起来更扎实、不单薄
     border_style = 3 if bg_box else 1
-    outline_val = 8 if bg_box else 3
-    back_colour = "&H80000000&" if bg_box else "&H000000&"  # 半透明黑色底框，&H80是约50%透明度
+    outline_val = 8 if bg_box else 4
+    back_colour = box_info["back"] if bg_box else "&H000000&"
 
     cues = parse_srt(srt_content)
     header = (
@@ -431,6 +457,8 @@ def main():
     subtitle_highlight_numbers = manifest.get("subtitle_highlight_numbers")
     subtitle_highlight_numbers = True if subtitle_highlight_numbers is None else bool(subtitle_highlight_numbers)
     subtitle_bg_box = bool(manifest.get("subtitle_bg_box"))
+    subtitle_font_style = manifest.get("subtitle_font_style") or "standard"
+    subtitle_box_scheme = manifest.get("subtitle_box_scheme") or "black"
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -481,9 +509,13 @@ def main():
             srt_content, ass_path, font_size=subtitle_size, position=subtitle_position,
             color_key=subtitle_color, bold=subtitle_bold,
             highlight_numbers=subtitle_highlight_numbers, bg_box=subtitle_bg_box,
+            font_style=subtitle_font_style, box_scheme=subtitle_box_scheme,
         )
         print(f"字幕生成完成，共 {cue_count} 条")
-        subtitle_filter = f"subtitles={ass_path}"
+        # fontsdir指向下载好的站酷快乐体所在目录，libass渲染的时候如果ASS样式里指定的字体名
+        # 是"ZCOOL KuaiLe"，会优先来这个目录找，找不到才退回系统字体库；选的是标准黑体的话
+        # 这个参数不会有任何影响（系统本来就装了Noto Sans CJK），加上也没有副作用
+        subtitle_filter = f"subtitles={ass_path}:fontsdir={FONTS_DIR}"
     except Exception as e:
         # 生成失败就退回最基础的样式，不能因为字幕这一步把整条视频搞挂
         print("字幕生成失败，退回基础字幕样式：", e)
@@ -494,14 +526,17 @@ def main():
         _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
         _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
         _color_tag = rgb_to_ass_bgr(_color_rgb)
-        _font_name = "Noto Sans CJK SC Black" if subtitle_bold else "Noto Sans CJK SC"
+        _font_name = resolve_subtitle_font(subtitle_font_style, subtitle_bold)
         _border_style = 3 if subtitle_bg_box else 1
-        _outline_val = 8 if subtitle_bg_box else 2
-        _back_colour = "&H80000000&" if subtitle_bg_box else "&H000000&"
+        _outline_val = 8 if subtitle_bg_box else 4
+        _box_info = SUBTITLE_BOX_SCHEMES.get(subtitle_box_scheme, SUBTITLE_BOX_SCHEMES["black"])
+        _back_colour = _box_info["back"] if subtitle_bg_box else "&H000000&"
+        if subtitle_bg_box and _box_info["text_override"]:
+            _color_tag = rgb_to_ass_bgr(_box_info["text_override"])
         style = (f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},"
                  f"OutlineColour=&H000000&,BackColour={_back_colour},BorderStyle={_border_style},"
                  f"Outline={_outline_val},Alignment={_align},MarginV={_mv}")
-        subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
+        subtitle_filter = f"subtitles={srt_path}:force_style='{style}':fontsdir={FONTS_DIR}"
 
     # 开头顶部大字标题字幕（悬念式大标题样式），是独立于上面逐句解说字幕的第二层，
     # 生成成功就在ffmpeg的滤镜链里跟主字幕串联叠加；不开启/没有内容/生成失败都不影响
@@ -510,8 +545,9 @@ def main():
         title_caption_path = f"{WORKDIR}/title_caption.ass"
         try:
             if build_title_caption_ass(title_caption_lines, title_caption_path, duration_sec=title_caption_duration,
-                                        font_size=subtitle_size, color_scheme=title_caption_color_scheme):
-                subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}"
+                                        font_size=subtitle_size, color_scheme=title_caption_color_scheme,
+                                        font_style=subtitle_font_style):
+                subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}:fontsdir={FONTS_DIR}"
                 print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
         except Exception as e:
             print("开头标题字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
