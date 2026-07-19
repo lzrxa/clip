@@ -244,7 +244,14 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, col
         if not clean_line:
             continue
         color = white_tag if idx % 2 == 0 else gold_tag
-        styled_parts.append(f"{{\\c{color}}}{clean_line}")
+        # 每一条标题字幕自己也可能超出屏幕宽度（AI没完全卡住字数上限，或者字号选得比较大），
+        # 之前这里没做任何限宽处理，字数一多就直接从画面左右两边溢出裁掉。这里跟解说字幕
+        # 用的是同一套按字号折算"一行大概能放多少字"的逻辑，超出的话在这一条内部再换行，
+        # 保证不会跑出屏幕；同一条原始标题换行出来的几个小行颜色保持一致，只有不同的
+        # 原始标题行之间才会交替颜色
+        sub_lines = split_text_into_single_line_chunks(clean_line, font_size)
+        wrapped_line = "\\N".join(sub_lines)
+        styled_parts.append(f"{{\\c{color}}}{wrapped_line}")
     if not styled_parts:
         return False
     text = "\\N".join(styled_parts)
@@ -454,6 +461,12 @@ def main():
     title_caption_color_scheme = manifest.get("title_caption_color_scheme") or "gold"
     title_caption_duration = manifest.get("title_caption_duration")
     title_caption_duration = float(title_caption_duration) if title_caption_duration else 4.5
+    # 标题字幕的字号/字体，之前是直接借用解说字幕那两个设置，跟着"字幕字号/字体样式"变——
+    # 但标题字幕（开头几秒的悬念大标题）和解说字幕（逐句同步的说明文字）本来就是两种不同用途的
+    # 东西，样式没必要绑在一起，这里改成读取各自独立的字段，互不影响
+    title_caption_font_size = manifest.get("title_caption_font_size")
+    title_caption_font_size = int(title_caption_font_size) if title_caption_font_size else 76
+    title_caption_font_style = manifest.get("title_caption_font_style") or "artistic"
     subtitle_highlight_numbers = manifest.get("subtitle_highlight_numbers")
     subtitle_highlight_numbers = True if subtitle_highlight_numbers is None else bool(subtitle_highlight_numbers)
     subtitle_bg_box = bool(manifest.get("subtitle_bg_box"))
@@ -545,8 +558,8 @@ def main():
         title_caption_path = f"{WORKDIR}/title_caption.ass"
         try:
             if build_title_caption_ass(title_caption_lines, title_caption_path, duration_sec=title_caption_duration,
-                                        font_size=subtitle_size, color_scheme=title_caption_color_scheme,
-                                        font_style=subtitle_font_style):
+                                        font_size=title_caption_font_size, color_scheme=title_caption_color_scheme,
+                                        font_style=title_caption_font_style):
                 subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}:fontsdir={FONTS_DIR}"
                 print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
         except Exception as e:
