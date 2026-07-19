@@ -155,6 +155,57 @@ def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
     return "\\N".join(lines)
 
 
+def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=58):
+    """开头顶部大字标题字幕（悬念式大标题样式）：仿照新闻/热门短视频账号常见的开头字幕——
+    多行文字叠在画面顶部，白色/金色逐行交替，加粗+黑色描边，只在视频最开头这几秒出现一次，
+    之后自动消失，不会跟下面逐句解说的字幕（build_subtitle_ass）冲突——这是完全独立的
+    第二层ASS字幕，渲染的时候在ffmpeg里跟主字幕链式叠加(-vf "subtitles=A,subtitles=B")，
+    互不干扰。逐句解说字幕本身还是保持"统一一种颜色"不变，多色交替是这层"标题字幕"独有的
+    风格，不会影响到解说字幕那边。
+    """
+    if not lines:
+        return False
+    font_name = "Noto Sans CJK SC Black"
+    white_tag = rgb_to_ass_bgr((255, 255, 255))
+    gold_tag = rgb_to_ass_bgr((255, 204, 0))
+
+    def escape_ass_text(t):
+        # 花括号在ASS里是"样式覆盖标签"的语法符号，AI生成的文字里万一恰好带了这几个字符，
+        # 会把后面的颜色交替标签forcibly打断、甚至让整行文字不显示，这里保险起见过滤掉
+        return str(t).replace("{", "").replace("}", "").replace("\\", "").strip()
+
+    styled_parts = []
+    for idx, line in enumerate(lines):
+        clean_line = escape_ass_text(line)
+        if not clean_line:
+            continue
+        color = white_tag if idx % 2 == 0 else gold_tag
+        styled_parts.append(f"{{\\c{color}}}{clean_line}")
+    if not styled_parts:
+        return False
+    text = "\\N".join(styled_parts)
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{font_name},{font_size},{white_tag},{white_tag},&H000000&,&H000000&,0,0,0,0,100,100,0,0,"
+        f"1,3,1,8,60,60,120,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    end_time = sec_to_ass_time(duration_sec)
+    dialogue = f"Dialogue: 0,0:00:00.00,{end_time},Default,,0,0,0,,{text}\n"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(header + dialogue)
+    return True
+
+
 def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True):
     """生成朴素字幕的ASS文件：统一颜色、统一字号、统一字体粗细，不做逐句变色/emoji/关键词高亮
 
@@ -280,6 +331,9 @@ def main():
     subtitle_color = manifest.get("subtitle_color") or "white"
     subtitle_bold = manifest.get("subtitle_bold")
     subtitle_bold = True if subtitle_bold is None else bool(subtitle_bold)
+    title_caption_lines = manifest.get("title_caption_lines") or []
+    enable_title_caption = manifest.get("enable_title_caption")
+    enable_title_caption = True if enable_title_caption is None else bool(enable_title_caption)
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -345,6 +399,18 @@ def main():
         _font_name = "Noto Sans CJK SC Black" if subtitle_bold else "Noto Sans CJK SC"
         style = f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
         subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
+
+    # 开头顶部大字标题字幕（悬念式大标题样式），是独立于上面逐句解说字幕的第二层，
+    # 生成成功就在ffmpeg的滤镜链里跟主字幕串联叠加；不开启/没有内容/生成失败都不影响
+    # 主字幕正常工作，这层从设计上就是"锦上添花，出问题就跳过"，不会拖累主流程
+    if enable_title_caption and title_caption_lines:
+        title_caption_path = f"{WORKDIR}/title_caption.ass"
+        try:
+            if build_title_caption_ass(title_caption_lines, title_caption_path):
+                subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}"
+                print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
+        except Exception as e:
+            print("开头标题字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
 
     run([
         "ffmpeg", "-y", "-i", concat_path,
