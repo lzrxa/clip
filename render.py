@@ -155,19 +155,29 @@ def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
     return "\\N".join(lines)
 
 
-def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90):
+TITLE_CAPTION_COLOR_SCHEMES = {
+    # 每个配色方案是(主色, 副色)，逐行交替使用，white固定打头，第二个颜色决定整体的"味道"
+    "gold": ((255, 255, 255), (255, 204, 0)),    # 白金，默认，新闻/热门内容通用
+    "red": ((255, 255, 255), (255, 66, 66)),     # 白红，更醒目/紧迫，适合促销、热点类
+    "blue": ((255, 255, 255), (100, 190, 255)),  # 白蓝，更冷静/信息感，适合科普、攻略类
+    "white": ((255, 255, 255), (255, 255, 255)),  # 纯白不交替，低调款，适合内容本身已经很有冲击力的素材
+}
+
+
+def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, color_scheme="gold"):
     """开头顶部大字标题字幕（悬念式大标题样式）：仿照新闻/热门短视频账号常见的开头字幕——
-    多行文字叠在画面顶部，白色/金色逐行交替，加粗+黑色描边，只在视频最开头这几秒出现一次，
-    之后自动消失，不会跟下面逐句解说的字幕（build_subtitle_ass）冲突——这是完全独立的
-    第二层ASS字幕，渲染的时候在ffmpeg里跟主字幕链式叠加(-vf "subtitles=A,subtitles=B")，
-    互不干扰。逐句解说字幕本身还是保持"统一一种颜色"不变，多色交替是这层"标题字幕"独有的
-    风格，不会影响到解说字幕那边。
+    多行文字叠在画面顶部，两色逐行交替（配色方案可选，见TITLE_CAPTION_COLOR_SCHEMES），
+    加粗+黑色描边，只在视频最开头这几秒出现一次，之后自动消失，不会跟下面逐句解说的字幕
+    （build_subtitle_ass）冲突——这是完全独立的第二层ASS字幕，渲染的时候在ffmpeg里跟主字幕
+    链式叠加(-vf "subtitles=A,subtitles=B")，互不干扰。逐句解说字幕本身还是保持"统一一种颜色"
+    不变，多色交替是这层"标题字幕"独有的风格，不会影响到解说字幕那边。
     """
     if not lines:
         return False
     font_name = "Noto Sans CJK SC Black"
-    white_tag = rgb_to_ass_bgr((255, 255, 255))
-    gold_tag = rgb_to_ass_bgr((255, 204, 0))
+    primary_rgb, secondary_rgb = TITLE_CAPTION_COLOR_SCHEMES.get(color_scheme, TITLE_CAPTION_COLOR_SCHEMES["gold"])
+    white_tag = rgb_to_ass_bgr(primary_rgb)
+    gold_tag = rgb_to_ass_bgr(secondary_rgb)
 
     def escape_ass_text(t):
         # 花括号在ASS里是"样式覆盖标签"的语法符号，AI生成的文字里万一恰好带了这几个字符，
@@ -206,13 +216,33 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90):
     return True
 
 
-def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True):
-    """生成朴素字幕的ASS文件：统一颜色、统一字号、统一字体粗细，不做逐句变色/emoji/关键词高亮
+NUMBER_HIGHLIGHT_PATTERN = re.compile(r"\d+\.?\d*%?")
+
+
+def apply_number_highlight(text, base_color_tag, highlight_color_tag):
+    """把文本里的数字（含百分号）用ASS内联颜色标签包起来改成高亮色，其余部分保持底色不变——
+    这是纯粹按正则规则识别数字模式、在渲染阶段由程序自己上色，不依赖AI输出任何markup，
+    跟之前"自动加emoji"那次的问题是完全不同性质的东西：emoji是内容层面的字符，可能被AI
+    生成又可能目标字体没收录、变成缺字方块；这里操作的是ASCII数字字符，不存在缺字风险，
+    也不需要经过AI的手，稳定可控。
+    """
+    def repl(m):
+        return f"{{\\c{highlight_color_tag}}}{m.group(0)}{{\\c{base_color_tag}}}"
+    return NUMBER_HIGHLIGHT_PATTERN.sub(repl, text)
+
+
+def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True,
+                        highlight_numbers=True, bg_box=False):
+    """生成逐句解说字幕的ASS文件
 
     font_size: 字号（数字越大字越大）
     position: 'top' / 'middle' / 'bottom'
     color_key: SUBTITLE_COLOR_MAP 里的一个key，如 'white'/'yellow'/'cyan'/'red'
     bold: 是否加粗
+    highlight_numbers: 是否把句子里的数字/百分比自动高亮成金色，其余文字保持统一颜色不变——
+        这不是"逐句变色"（整句话换颜色），是"句子里的数字单独换颜色，其余文字不变"，
+        两者是完全不同的效果，数字高亮更精准、更不容易出问题
+    bg_box: 是否给字幕加一块半透明背景框（更适合背景比较杂乱、文字描边也压不住的素材）
     """
     # 'middle' 之前用的是ASS的"5"（正中心）对齐方式，这种对齐是按文字块的几何中心来定位的——
     # 一句话如果换行成1行还是2行，文字块整体高度不一样，"中心"对齐的结果就是每一句字幕的
@@ -229,11 +259,18 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     alignment, margin_v = position_map.get(position, position_map["bottom"])
     color_rgb = SUBTITLE_COLOR_MAP.get(color_key, SUBTITLE_COLOR_MAP["white"])
     color_tag = rgb_to_ass_bgr(color_rgb)
+    highlight_tag = rgb_to_ass_bgr((255, 204, 0))  # 数字高亮固定用金色，跟标题字幕的强调色是同一个色系，风格统一
     # 加粗时直接换用 Noto Sans CJK 的 Black（最粗）字重，比原来单纯给Bold字重再加ASS粗体标记
     # 视觉效果更扎实清晰；这两个字重都是 SIL Open Font License 完全免费商用，没有版权顾虑。
     # 不加粗则维持原来的常规字重不变。
     font_name = "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
     line_height = int(font_size * 1.2)
+    # BorderStyle=1是"文字+描边"（默认样式）；BorderStyle=3是"文字+一块实心底色框"，
+    # 加了背景框之后描边就不需要了（框本身已经能保证在任何背景下都看得清），Outline/Shadow
+    # 这两个数值在BorderStyle=3下含义会变成"背景框的内边距/投影"，这里给了比较克制的数值
+    border_style = 3 if bg_box else 1
+    outline_val = 8 if bg_box else 3
+    back_colour = "&H80000000&" if bg_box else "&H000000&"  # 半透明黑色底框，&H80是约50%透明度
 
     cues = parse_srt(srt_content)
     header = (
@@ -245,14 +282,16 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,{font_name},{font_size},{color_tag},{color_tag},&H000000&,&H000000&,0,0,0,0,100,100,0,0,"
-        f"1,3,0,{alignment},60,60,{margin_v},1\n\n"
+        f"Style: Default,{font_name},{font_size},{color_tag},{color_tag},&H000000&,{back_colour},0,0,0,0,100,100,0,0,"
+        f"{border_style},{outline_val},0,{alignment},60,60,{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     lines = [header]
     for start, end, text in cues:
         wrapped_text = wrap_subtitle_text(text, font_size)
+        if highlight_numbers:
+            wrapped_text = apply_number_highlight(wrapped_text, color_tag, highlight_tag)
         if position == "middle":
             num_lines = wrapped_text.count("\\N") + 1
             this_margin_v = max(50, margin_v - int((num_lines - 1) * line_height / 2))
@@ -334,6 +373,12 @@ def main():
     title_caption_lines = manifest.get("title_caption_lines") or []
     enable_title_caption = manifest.get("enable_title_caption")
     enable_title_caption = True if enable_title_caption is None else bool(enable_title_caption)
+    title_caption_color_scheme = manifest.get("title_caption_color_scheme") or "gold"
+    title_caption_duration = manifest.get("title_caption_duration")
+    title_caption_duration = float(title_caption_duration) if title_caption_duration else 4.5
+    subtitle_highlight_numbers = manifest.get("subtitle_highlight_numbers")
+    subtitle_highlight_numbers = True if subtitle_highlight_numbers is None else bool(subtitle_highlight_numbers)
+    subtitle_bg_box = bool(manifest.get("subtitle_bg_box"))
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -383,6 +428,7 @@ def main():
         cue_count = build_subtitle_ass(
             srt_content, ass_path, font_size=subtitle_size, position=subtitle_position,
             color_key=subtitle_color, bold=subtitle_bold,
+            highlight_numbers=subtitle_highlight_numbers, bg_box=subtitle_bg_box,
         )
         print(f"字幕生成完成，共 {cue_count} 条")
         subtitle_filter = f"subtitles={ass_path}"
@@ -397,7 +443,12 @@ def main():
         _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
         _color_tag = rgb_to_ass_bgr(_color_rgb)
         _font_name = "Noto Sans CJK SC Black" if subtitle_bold else "Noto Sans CJK SC"
-        style = f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment={_align},MarginV={_mv}"
+        _border_style = 3 if subtitle_bg_box else 1
+        _outline_val = 8 if subtitle_bg_box else 2
+        _back_colour = "&H80000000&" if subtitle_bg_box else "&H000000&"
+        style = (f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},"
+                 f"OutlineColour=&H000000&,BackColour={_back_colour},BorderStyle={_border_style},"
+                 f"Outline={_outline_val},Alignment={_align},MarginV={_mv}")
         subtitle_filter = f"subtitles={srt_path}:force_style='{style}'"
 
     # 开头顶部大字标题字幕（悬念式大标题样式），是独立于上面逐句解说字幕的第二层，
@@ -406,7 +457,8 @@ def main():
     if enable_title_caption and title_caption_lines:
         title_caption_path = f"{WORKDIR}/title_caption.ass"
         try:
-            if build_title_caption_ass(title_caption_lines, title_caption_path, font_size=subtitle_size):
+            if build_title_caption_ass(title_caption_lines, title_caption_path, duration_sec=title_caption_duration,
+                                        font_size=subtitle_size, color_scheme=title_caption_color_scheme):
                 subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}"
                 print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
         except Exception as e:
