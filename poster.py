@@ -121,11 +121,22 @@ def get_background(manifest):
     if manifest["background_source"] == "ai":
         if not SILICONFLOW_API_KEY:
             raise RuntimeError("选择了AI背景但未配置 SILICONFLOW_API_KEY")
-        prompt = manifest.get("ai_bg_prompt") or (
-            f"abstract travel poster background, {manifest.get('title', '')}, "
-            "soft gradient, mountains and grassland silhouette, minimal illustration, "
-            "no text, no letters, no words, vertical composition"
-        )
+        # 之前这里默认提示词写死是"山脉草原剪影"，不管什么领域的海报都会往这个方向生成，
+        # 音乐培训这类海报用AI背景兜底时画面会很不搭。这里按manifest传过来的domain换一版默认词，
+        # 用户自己填了ai_bg_prompt的话还是优先用用户填的
+        if manifest.get("domain") == "music":
+            default_prompt = (
+                f"abstract elegant background for a music school poster, {manifest.get('title', '')}, "
+                "soft warm gradient, subtle music notes and instrument silhouettes, minimal illustration, "
+                "no text, no letters, no words, no people, vertical composition"
+            )
+        else:
+            default_prompt = (
+                f"abstract travel poster background, {manifest.get('title', '')}, "
+                "soft gradient, mountains and grassland silhouette, minimal illustration, "
+                "no text, no letters, no words, vertical composition"
+            )
+        prompt = manifest.get("ai_bg_prompt") or default_prompt
         resp = requests.post(
             "https://api.siliconflow.cn/v1/images/generations",
             headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"},
@@ -195,6 +206,17 @@ def add_vertical_gradient(img, box, top_alpha, bottom_alpha, color=(0, 0, 0)):
     for y in range(h):
         alpha = int(top_alpha + (bottom_alpha - top_alpha) * (y / max(1, h)))
         draw.line([(0, y), (x1 - x0, y)], fill=(*color, alpha))
+    img.paste(overlay, (x0, y0), overlay)
+
+
+def add_horizontal_gradient(img, box, left_alpha, right_alpha, color=(0, 0, 0)):
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    overlay = Image.new("RGBA", (w, y1 - y0), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for x in range(w):
+        alpha = int(left_alpha + (right_alpha - left_alpha) * (x / max(1, w)))
+        draw.line([(x, 0), (x, y1 - y0)], fill=(*color, alpha))
     img.paste(overlay, (x0, y0), overlay)
 
 
@@ -572,6 +594,380 @@ def build_poster_promo(manifest, bg_img, out_path):
     canvas.convert("RGB").save(out_path, quality=92)
 
 
+def draw_checkmark(draw, cx, cy, r, color):
+    """画一个"打钩"图标：外面一个描边圆圈，里面画勾——不用现成的✓字符（那类符号在
+    Noto Sans CJK这套字体里大概率没有对应字形，用了又会变回那种"缺字方块"），
+    自己拿线条画一个，稳定不出错，风格还能自己控制粗细颜色"""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=4)
+    draw.line([(cx - r * 0.45, cy), (cx - r * 0.1, cy + r * 0.4), (cx + r * 0.5, cy - r * 0.35)],
+               fill=color, width=5, joint="curve")
+
+
+def draw_number_circle(draw, cx, cy, r, number, font, color, text_color):
+    """画一个"编号圆圈"：圆圈里放数字——道理跟打钩图标一样，不用①②③这类"带圈数字"
+    Unicode符号（同样存在字体不一定收录、变成缺字方块的风险），自己画一个圆+普通数字，
+    效果一样，还不会有兼容性问题"""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+    text = str(number)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text((cx - tw / 2 - bbox[0], cy - th / 2 - bbox[1]), text, font=font, fill=text_color)
+
+
+def build_poster_recruit(manifest, bg_img, out_path):
+    """招生介绍版：打钩清单 + 价格对比（原价划线+优惠价）+ 老师名片 + 编号课程信息，
+    走浅色暖色调，是"名师招生海报"这一类常见结构的通用版式（不是照抄某一张具体海报，
+    是这类海报共有的功能模块拼出来的），适合招生宣传、名师介绍这类场景，旅游内容也能用。
+    """
+    checklist = manifest.get("checklist_items") or []
+    course_info = manifest.get("course_info_items") or []
+    teacher_name = safe_text(manifest.get("teacher_name") or "")
+    teacher_bio = safe_text(manifest.get("teacher_bio") or "")
+    teacher_photo_url = manifest.get("teacher_photo_url")
+    original_price = safe_text(manifest.get("original_price") or "")
+    discounted_price = safe_text(manifest.get("discounted_price") or "")
+    price_note = safe_text(manifest.get("price_note") or "")
+    has_price = bool(discounted_price)
+    has_teacher = bool(teacher_name)
+
+    CREAM = (250, 246, 238)
+    MAROON = (109, 38, 30)
+    GOLD = (196, 142, 42)
+    INK = (58, 48, 44)
+
+    # 画布高度按内容动态撑高，跟标准版的思路一样，只是这里是"浅色内容区"为主、照片是
+    # 顶部的点缀，跟标准版"照片为主、深色内容区在底部"正好反过来
+    photo_h = 640
+    y_est = photo_h + 40 + 260 + 70  # 顶部图 + hook行 + 标题区 + 英文小标题
+    if checklist:
+        y_est += 40 + len(checklist) * 62
+    if has_price:
+        y_est += 210
+    if has_teacher:
+        y_est += 260
+    if course_info:
+        y_est += 90 + len(course_info) * 74
+    y_est += 160  # 底部tagline+留白
+    canvas_h = max(1920, y_est)
+
+    canvas = Image.new("RGBA", (W, canvas_h), CREAM)
+    photo = cover_resize(bg_img, W, photo_h).convert("RGBA")
+    canvas.paste(photo, (0, 0))
+    add_vertical_gradient(canvas, (0, photo_h - 220, W, photo_h), 0, 255, color=CREAM)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    f_hook = font([NOTO_BOLD], 34)
+    f_title = font([NOTO_BLACK, NOTO_BOLD], 92)
+    f_subtitle_en = font([NOTO_BOLD], 26)
+    f_item = font([NOTO_BOLD], 34)
+    f_price_note = font([NOTO_REGULAR], 28)
+    f_price_small = font([NOTO_BOLD], 34)
+    f_price_big = font([NOTO_BLACK, NOTO_BOLD], 88)
+    f_price_unit = font([NOTO_BOLD], 30)
+    f_teacher_name = font([NOTO_BLACK, NOTO_BOLD], 40)
+    f_teacher_bio = font([NOTO_REGULAR], 26)
+    f_section_title = font([NOTO_BOLD], 32)
+    f_course_item = font([NOTO_BOLD], 30)
+    f_number = font([NOTO_BOLD], 26)
+    f_bottom = font([NOTO_BOLD], 28)
+
+    y = photo_h - 130
+
+    # 打钩小标语（比如"这个暑假，一起唱响舞台！"），复用highlight_word这个字段
+    hook_text = safe_text(manifest.get("highlight_word") or "")
+    if hook_text:
+        draw_checkmark(draw, 76, y + 16, 18, GOLD)
+        draw.text((110, y), hook_text, font=f_hook, fill=MAROON)
+        y += 60
+
+    # 大标题（多行），标题换行沿用标准版的textwrap.fill方式
+    title = safe_text(manifest.get("title") or "")
+    wrapped = textwrap.fill(title, width=8)
+    for line in wrapped.split("\n"):
+        draw.text((48, y), line, font=f_title, fill=MAROON)
+        bbox = draw.textbbox((0, 0), line, font=f_title)
+        y += (bbox[3] - bbox[1]) + 26
+
+    subtitle_en = safe_text(manifest.get("subtitle_en") or "")
+    if subtitle_en:
+        spaced = " ".join(list(subtitle_en.replace(" ", "")))
+        draw.text((48, y + 6), spaced, font=f_subtitle_en, fill=(*INK, 190))
+        y += 62
+    y += 30
+
+    # 打钩清单（"两人即开课·满2人开班"这类招生信息）
+    for item in checklist:
+        draw_checkmark(draw, 66, y + 22, 20, (60, 150, 90))
+        draw.text((104, y), safe_text(item), font=f_item, fill=INK)
+        y += 62
+    y += 20
+
+    # 价格对比：原价划线 + 优惠说明 + 大字优惠价
+    if has_price:
+        if original_price:
+            orig_text = f"原价 {original_price}元/人"
+            draw.text((48, y), orig_text, font=f_price_small, fill=(*INK, 200))
+            bbox = draw.textbbox((0, 0), orig_text, font=f_price_small)
+            strike_y = y + (bbox[3] - bbox[1]) // 2
+            draw.line([(48, strike_y), (48 + (bbox[2] - bbox[0]), strike_y)], fill=(*INK, 200), width=3)
+            y += 54
+        if price_note:
+            draw.text((48, y), price_note, font=f_price_note, fill=(*INK, 220))
+            y += 50
+        price_line = f"{discounted_price}"
+        draw.text((48, y), price_line, font=f_price_big, fill=GOLD)
+        bbox = draw.textbbox((0, 0), price_line, font=f_price_big)
+        unit_x = 48 + (bbox[2] - bbox[0]) + 10
+        draw.text((unit_x, y + (bbox[3] - bbox[1]) - 34), "元/人", font=f_price_unit, fill=MAROON)
+        y += (bbox[3] - bbox[1]) + 40
+
+    # 老师名片：圆形头像 + 姓名 + 简介，装在一张浅色卡片里
+    if has_teacher:
+        card_h = 220
+        draw.rounded_rectangle([48, y, W - 48, y + card_h], radius=24, fill=(255, 255, 255, 235))
+        avatar_size = 160
+        avatar_x, avatar_y = 72, y + 30
+        if teacher_photo_url:
+            try:
+                resp = requests.get(teacher_photo_url, timeout=30)
+                resp.raise_for_status()
+                photo_img = Image.open(BytesIO(resp.content)).convert("RGBA")
+                pw, ph = photo_img.size
+                side = min(pw, ph)
+                photo_img = photo_img.crop(((pw - side) // 2, (ph - side) // 2, (pw + side) // 2, (ph + side) // 2))
+                photo_img = photo_img.resize((avatar_size, avatar_size))
+                mask = Image.new("L", (avatar_size, avatar_size), 0)
+                ImageDraw.Draw(mask).ellipse([0, 0, avatar_size, avatar_size], fill=255)
+                canvas.paste(photo_img, (avatar_x, avatar_y), mask)
+            except Exception as e:
+                print("老师照片下载失败，跳过（不影响海报其它内容）：", e)
+        else:
+            draw.ellipse([avatar_x, avatar_y, avatar_x + avatar_size, avatar_y + avatar_size], fill=(230, 222, 205))
+        text_x = avatar_x + avatar_size + 28
+        draw.text((text_x, y + 34), teacher_name, font=f_teacher_name, fill=MAROON)
+        bio_wrapped = textwrap.fill(teacher_bio, width=17)
+        draw.multiline_text((text_x, y + 90), bio_wrapped, font=f_teacher_bio, fill=INK, spacing=8)
+        y += card_h + 40
+
+    # 编号课程信息（"上课地点""开课时间"这类，用画的编号圆圈，不用①②③字符）
+    if course_info:
+        draw.text((48, y), "课程信息", font=f_section_title, fill=MAROON)
+        y += 50
+        draw.line([(48, y), (W - 48, y)], fill=(*GOLD, 140), width=2)
+        y += 30
+        for idx, item in enumerate(course_info, 1):
+            draw_number_circle(draw, 62, y + 20, 20, idx, f_number, GOLD, (255, 255, 255))
+            draw.text((100, y), safe_text(item), font=f_course_item, fill=INK)
+            y += 68
+        y += 20
+
+    bottom_tagline = safe_text(manifest.get("bottom_tagline") or "")
+    if bottom_tagline:
+        bbox = draw.textbbox((0, 0), bottom_tagline, font=f_bottom)
+        tw = bbox[2] - bbox[0]
+        draw.text(((W - tw) / 2, y), bottom_tagline, font=f_bottom, fill=MAROON)
+        y += 60
+
+    canvas.convert("RGB").save(out_path, quality=92)
+
+
+def build_poster_expert_lecture(manifest, bg_img, out_path):
+    """师资培训/机构品宣版：深色背景+金色大标题，左侧文字信息、右侧透出人像，
+    底部一张"课程概览"卡片——适合师资培训、专家讲堂、机构品牌宣传这类场景。
+    人像照片不做抠图（这里没有能力做背景分离），走的是"整张照片铺满+左侧渐深遮罩"
+    的思路：文字这一侧几乎全暗保证可读，越往右越透出照片本身，效果上接近"人物在右侧"。
+    """
+    course_info = manifest.get("course_info_items") or []
+    overview_text = safe_text(manifest.get("overview_text") or "")
+    locations = manifest.get("locations") or []  # 复用做"底部信息行"（培训地点/培训时间）
+
+    DARK = (20, 24, 34)
+    GOLD = (196, 160, 90)
+    GOLD_LIGHT = (226, 200, 148)
+
+    extra_h = 0
+    if course_info:
+        extra_h += len(course_info) * 58
+    if overview_text:
+        extra_h += 240
+    canvas_h = max(1920, 1500 + extra_h)
+
+    canvas = Image.new("RGBA", (W, canvas_h), DARK)
+    photo = cover_resize(bg_img, W, canvas_h).convert("RGBA")
+    canvas.paste(photo, (0, 0))
+    add_horizontal_gradient(canvas, (0, 0, W, canvas_h), 235, 70, color=DARK)
+    add_vertical_gradient(canvas, (0, 0, W, 260), 120, 0, color=DARK)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    # 几条装饰性金色线框，呼应参考海报里那种几何切割感，纯线条拼出来，不依赖任何图片素材
+    draw.line([(W - 420, -40), (W + 40, 460)], fill=(*GOLD, 80), width=3)
+    draw.line([(W - 300, -40), (W + 40, 340)], fill=(*GOLD, 50), width=2)
+
+    f_brand = font([NOTO_BOLD], 22)
+    f_title = font([NOTO_BLACK, NOTO_BOLD], 64)
+    f_subtitle = font([NOTO_BOLD], 32)
+    f_info_item = font([NOTO_BOLD], 29)
+    f_overview_head = font([NOTO_BLACK, NOTO_BOLD], 32)
+    f_overview_body = font([NOTO_REGULAR], 27)
+    f_footer_value = font([NOTO_REGULAR], 25)
+
+    y = 56
+    brand = safe_text(manifest.get("footer_tag") or "")
+    if brand:
+        bbox = draw.textbbox((0, 0), brand, font=f_brand)
+        tw = bbox[2] - bbox[0]
+        draw.text((W - 48 - tw, y), brand, font=f_brand, fill=(*GOLD_LIGHT, 235))
+        y += 60
+    else:
+        y += 20
+
+    title = safe_text(manifest.get("title") or "")
+    wrapped = textwrap.fill(title, width=9)
+    for line in wrapped.split("\n"):
+        draw.text((48, y), line, font=f_title, fill=GOLD_LIGHT, stroke_width=1, stroke_fill=(0, 0, 0, 160))
+        bbox = draw.textbbox((0, 0), line, font=f_title)
+        y += (bbox[3] - bbox[1]) + 22
+    y += 6
+
+    subtitle = safe_text(manifest.get("highlight_word") or "")
+    if subtitle:
+        draw.text((48, y), "〉 " + subtitle, font=f_subtitle, fill=(255, 255, 255, 235))
+        y += 76
+    y += 40
+
+    for item in course_info:
+        draw.text((48, y), safe_text(item), font=f_info_item, fill=(255, 255, 255, 235))
+        y += 50
+    y += 30
+
+    if overview_text:
+        overview_wrapped = textwrap.fill(overview_text, width=21)
+        line_count = overview_wrapped.count("\n") + 1
+        card_h = 100 + line_count * 42
+        card_y = canvas_h - card_h - 130
+        draw.rounded_rectangle([48, card_y, W - 48, card_y + card_h], radius=20, fill=(*GOLD, 235))
+        draw.rounded_rectangle([48, card_y - 46, 300, card_y + 12], radius=14, fill=DARK)
+        draw.text((70, card_y - 36), "课程概览", font=f_overview_head, fill=GOLD_LIGHT)
+        draw.multiline_text((70, card_y + 30), overview_wrapped, font=f_overview_body, fill=(32, 24, 14), spacing=10)
+
+    footer_y = canvas_h - 90
+    for i, loc in enumerate(locations[:2]):
+        draw.text((48, footer_y + i * 40), safe_text(loc), font=f_footer_value, fill=(255, 255, 255, 220))
+
+    canvas.convert("RGB").save(out_path, quality=92)
+
+
+def build_poster_teacher_profile(manifest, bg_img, out_path):
+    """教师个人简介版：浅色高级感底色 + 教师照片 + "教师简介"/"教学成果"两组清单，
+    不需要背景素材（main()里已经跳过了get_background，这里bg_img传进来也是None，不使用），
+    纯粹是教师个人履历/名片风格的海报，没有价格、没有招生信息。
+    """
+    teacher_name = safe_text(manifest.get("teacher_name") or "")
+    teacher_photo_url = manifest.get("teacher_photo_url")
+    role_label = safe_text(manifest.get("highlight_word") or "")
+    studio_name_en = safe_text(manifest.get("subtitle_en") or "")
+    experience_badge = safe_text(manifest.get("badge_text") or "")
+    courses = manifest.get("locations") or []
+    bio_items = manifest.get("checklist_items") or []
+    achievement_items = manifest.get("highlights") or []
+
+    CREAM = (238, 230, 216)
+    INK = (58, 50, 44)
+    GOLD = (162, 124, 74)
+
+    extra_h = 0
+    if bio_items:
+        extra_h += 56 + len(bio_items) * 52
+    if achievement_items:
+        rows = (len(achievement_items) + 1) // 2
+        extra_h += 56 + rows * 52
+    canvas_h = max(1920, 1560 + extra_h)
+
+    canvas = Image.new("RGBA", (W, canvas_h), CREAM)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    f_tag = font([NOTO_BOLD], 22)
+    f_courses = font([NOTO_REGULAR], 23)
+    f_studio_en = font([NOTO_REGULAR], 38)
+    f_name = font([NOTO_BLACK, NOTO_BOLD], 54)
+    f_role = font([NOTO_BOLD], 28)
+    f_badge_num = font([NOTO_BLACK, NOTO_BOLD], 38)
+    f_section_head = font([NOTO_BOLD], 30)
+    f_item = font([NOTO_REGULAR], 25)
+
+    y = 56
+    if courses:
+        rect = draw_pill(draw, (48, y), "开设课程", f_tag, fill=(*GOLD, 230), text_fill=(255, 255, 255, 255))
+        courses_text = safe_text("丨".join(courses))
+        draw.text((rect[2] + 16, y + 8), courses_text, font=f_courses, fill=INK)
+        y += 66
+    if studio_name_en:
+        draw.text((48, y), studio_name_en, font=f_studio_en, fill=(*INK, 200))
+        y += 76
+
+    photo_top = y + 16
+    photo_h_area = 760
+    if teacher_photo_url:
+        try:
+            resp = requests.get(teacher_photo_url, timeout=30)
+            resp.raise_for_status()
+            photo_img = Image.open(BytesIO(resp.content)).convert("RGBA")
+            photo_img = cover_resize(photo_img, W - 96, photo_h_area).convert("RGBA")
+            mask = Image.new("L", (W - 96, photo_h_area), 0)
+            ImageDraw.Draw(mask).rounded_rectangle([0, 0, W - 96, photo_h_area], radius=24, fill=255)
+            canvas.paste(photo_img, (48, photo_top), mask)
+        except Exception as e:
+            print("教师照片下载失败，用纯色占位（不影响海报其它内容）：", e)
+            draw.rounded_rectangle([48, photo_top, W - 48, photo_top + photo_h_area], radius=24, fill=(220, 210, 195))
+    else:
+        draw.rounded_rectangle([48, photo_top, W - 48, photo_top + photo_h_area], radius=24, fill=(220, 210, 195))
+    y = photo_top + photo_h_area + 46
+
+    if experience_badge:
+        bbox = draw.textbbox((0, 0), experience_badge, font=f_badge_num)
+        badge_w = (bbox[2] - bbox[0]) + 56
+        badge_h = 84
+        badge_y = photo_top + photo_h_area - badge_h - 24
+        draw.rounded_rectangle([W - 48 - badge_w, badge_y, W - 48, badge_y + badge_h], radius=12, fill=(*CREAM, 245))
+        draw.text((W - 48 - badge_w + 18, badge_y + 18), experience_badge, font=f_badge_num, fill=GOLD)
+
+    if teacher_name:
+        draw.text((48, y), teacher_name, font=f_name, fill=INK)
+        bbox = draw.textbbox((0, 0), teacher_name, font=f_name)
+        y += (bbox[3] - bbox[1]) + 14
+    if role_label:
+        draw.text((48, y), role_label, font=f_role, fill=GOLD)
+        y += 54
+    y += 20
+    draw.line([(48, y), (W - 48, y)], fill=(*GOLD, 150), width=2)
+    y += 34
+
+    if bio_items:
+        draw.text((48, y), "教师简介", font=f_section_head, fill=INK)
+        y += 58
+        for item in bio_items:
+            draw.ellipse([50, y + 11, 58, y + 19], fill=GOLD)
+            draw.text((76, y), safe_text(item), font=f_item, fill=INK)
+            y += 52
+        y += 26
+
+    if achievement_items:
+        draw.text((48, y), "教学成果", font=f_section_head, fill=INK)
+        y += 58
+        col_w = (W - 96) // 2
+        for idx, item in enumerate(achievement_items):
+            col = idx % 2
+            row = idx // 2
+            item_x = 48 + col * col_w
+            item_y = y + row * 52
+            draw.ellipse([item_x + 2, item_y + 11, item_x + 10, item_y + 19], fill=GOLD)
+            draw.text((item_x + 26, item_y), safe_text(item), font=f_item, fill=INK)
+        rows = (len(achievement_items) + 1) // 2
+        y += rows * 52 + 20
+
+    canvas.convert("RGB").save(out_path, quality=92)
+
+
 def build_poster(manifest, bg_img, out_path):
     """按 manifest['template'] 分发到对应版式，找不到就用标准版兜底。"""
     template = manifest.get("template") or "standard"
@@ -579,6 +975,12 @@ def build_poster(manifest, bg_img, out_path):
         build_poster_brand(manifest, bg_img, out_path)
     elif template == "promo":
         build_poster_promo(manifest, bg_img, out_path)
+    elif template == "recruit":
+        build_poster_recruit(manifest, bg_img, out_path)
+    elif template == "expert_lecture":
+        build_poster_expert_lecture(manifest, bg_img, out_path)
+    elif template == "teacher_profile":
+        build_poster_teacher_profile(manifest, bg_img, out_path)
     else:
         build_poster_standard(manifest, bg_img, out_path)
 
@@ -586,7 +988,13 @@ def build_poster(manifest, bg_img, out_path):
 def main():
     os.makedirs(WORKDIR, exist_ok=True)
     manifest = fetch_manifest()
-    bg_img = get_background(manifest)
+    # "教师个人简介版"这个版式不需要一张"背景图"——它的主视觉就是老师照片本身，走的是
+    # 浅色卡纸底色，不是"照片+文字浮在上面"那种结构。这里跳过背景图获取，省一次下载/AI生成，
+    # 用户选这个版式时其实也不需要去选背景素材
+    if manifest.get("template") == "teacher_profile":
+        bg_img = None
+    else:
+        bg_img = get_background(manifest)
 
     out_path = f"{WORKDIR}/poster.jpg"
     build_poster(manifest, bg_img, out_path)
