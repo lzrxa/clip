@@ -127,10 +127,45 @@ def parse_srt(content):
     return cues
 
 
+def split_text_into_single_line_chunks(text, font_size, canvas_width=1080, margin=60):
+    """把一句解说词切成若干段，保证每一段单独显示的时候都能在一行内放完，不会挤成两行——
+    跟下面这个思路是配套的：与其把一句话硬塞进同一屏幕、用\\N换行挤成两三行文字块，
+    不如把这句话拆成几个短句，按时间顺序一段一段单独显示，每次画面上只有一行字，
+    这也是抖音/小红书这类短视频最常见的字幕呈现方式。这里的断句规则（优先标点、
+    找不到标点就按字数硬断）跟原来的wrap_subtitle_text是同一套，只是返回的是
+    一个列表（后面每一项都会单独生成一条时间不同的字幕，而不是拼成一整块文字）。
+    """
+    usable_width = canvas_width - margin * 2
+    max_chars = max(4, int(usable_width / font_size))
+    if len(text) <= max_chars:
+        return [text]
+
+    break_chars = "，。！？、,."
+    chunks = []
+    remaining = text
+    while len(remaining) > max_chars:
+        window = remaining[:max_chars + 1]
+        split_pos = -1
+        for i in range(len(window) - 1, -1, -1):
+            if window[i] in break_chars:
+                split_pos = i + 1
+                break
+        if split_pos <= 0:
+            split_pos = max_chars
+        chunks.append(remaining[:split_pos])
+        remaining = remaining[split_pos:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
     """中文字幕手动换行：ASS/libass的自动换行是按空格断词的，中文没有空格，
     一整句会被当成一个不可拆分的词，超出画面宽度不会自动折行，而是直接溢出被裁掉。
-    这里按字号估算每行大概能放多少个字，优先在标点处断行，找不到合适标点就硬断。"""
+    这里按字号估算每行大概能放多少个字，优先在标点处断行，找不到合适标点就硬断。
+    注：解说字幕现在已经改用上面那个split_text_into_single_line_chunks（一次只显示
+    一行、按时间切成多段），不再用这个函数的\\N多行拼接结果；这个函数继续保留是给
+    极少数还需要"多行拼一块"效果的地方兜底用，目前实际没有调用方在用它。"""
     usable_width = canvas_width - margin * 2
     max_chars = max(4, int(usable_width / font_size))
     if len(text) <= max_chars:
@@ -264,7 +299,6 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     # 视觉效果更扎实清晰；这两个字重都是 SIL Open Font License 完全免费商用，没有版权顾虑。
     # 不加粗则维持原来的常规字重不变。
     font_name = "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
-    line_height = int(font_size * 1.2)
     # BorderStyle=1是"文字+描边"（默认样式）；BorderStyle=3是"文字+一块实心底色框"，
     # 加了背景框之后描边就不需要了（框本身已经能保证在任何背景下都看得清），Outline/Shadow
     # 这两个数值在BorderStyle=3下含义会变成"背景框的内边距/投影"，这里给了比较克制的数值
@@ -288,19 +322,37 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     lines = [header]
+    event_count = 0
     for start, end, text in cues:
-        wrapped_text = wrap_subtitle_text(text, font_size)
-        if highlight_numbers:
-            wrapped_text = apply_number_highlight(wrapped_text, color_tag, highlight_tag)
-        if position == "middle":
-            num_lines = wrapped_text.count("\\N") + 1
-            this_margin_v = max(50, margin_v - int((num_lines - 1) * line_height / 2))
-        else:
-            this_margin_v = 0  # 0表示沿用Style里的默认MarginV，不做逐条覆盖
-        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,{this_margin_v},,{wrapped_text}\n")
+        # 之前是把整句话用\N拼成一块多行文字、一次性显示——这句话稍微长一点（解说词
+        # 通常15-25字），在"特大"这种大字号下一行根本放不下，必然挤成两三行。现在改成
+        # 按能塞进一行的长度把这句话切成几段，每段单独算一段独立的显示时间（按每段字数
+        # 占全句字数的比例，从这句话原本的[start,end]这段时间里按比例分），实现"画面上
+        # 任何时刻只有一行字，跟着语速一段一段往下切"的效果，这也是短视频最常见的字幕呈现方式
+        chunks = split_text_into_single_line_chunks(text, font_size)
+        total_chars = sum(len(c) for c in chunks) or 1
+        total_duration = max(0.01, end - start)
+        cursor = start
+        for i, chunk in enumerate(chunks):
+            chunk = chunk.strip("，。！？、,. ")
+            if not chunk:
+                continue
+            if i == len(chunks) - 1:
+                seg_end = end  # 最后一段直接对齐到原本的结束时间，避免累计的浮点误差导致提前结束
+            else:
+                portion = len(chunk) / total_chars
+                seg_end = cursor + total_duration * portion
+            seg_text = apply_number_highlight(chunk, color_tag, highlight_tag) if highlight_numbers else chunk
+            if position == "middle":
+                this_margin_v = margin_v  # 现在保证每段都是单行，不用再按行数做微调，直接用统一锚点就行
+            else:
+                this_margin_v = 0
+            lines.append(f"Dialogue: 0,{sec_to_ass_time(cursor)},{sec_to_ass_time(seg_end)},Default,,0,0,{this_margin_v},,{seg_text}\n")
+            event_count += 1
+            cursor = seg_end
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
-    return len(cues)
+    return event_count
 # ==================== 字幕生成函数结束 ====================
 
 
