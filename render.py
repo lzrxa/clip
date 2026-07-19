@@ -155,7 +155,7 @@ def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
     return "\\N".join(lines)
 
 
-def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=58):
+def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90):
     """开头顶部大字标题字幕（悬念式大标题样式）：仿照新闻/热门短视频账号常见的开头字幕——
     多行文字叠在画面顶部，白色/金色逐行交替，加粗+黑色描边，只在视频最开头这几秒出现一次，
     之后自动消失，不会跟下面逐句解说的字幕（build_subtitle_ass）冲突——这是完全独立的
@@ -195,7 +195,7 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=58):
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{font_name},{font_size},{white_tag},{white_tag},&H000000&,&H000000&,0,0,0,0,100,100,0,0,"
-        f"1,3,1,8,60,60,120,1\n\n"
+        f"1,4,1,8,60,60,120,1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -406,7 +406,7 @@ def main():
     if enable_title_caption and title_caption_lines:
         title_caption_path = f"{WORKDIR}/title_caption.ass"
         try:
-            if build_title_caption_ass(title_caption_lines, title_caption_path):
+            if build_title_caption_ass(title_caption_lines, title_caption_path, font_size=subtitle_size):
                 subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}"
                 print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
         except Exception as e:
