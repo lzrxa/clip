@@ -273,15 +273,31 @@ def build_poster_standard(manifest, bg_img, out_path):
     departure_info = manifest.get("departure_info") or ""   # 如 "长沙直飞乌鲁木齐"
     tiers = manifest.get("price_tiers") or []
 
-    # 画布高度按内容动态撑高：填得越多，海报就越长，不会互相挤压
+    # 之前这里"填得越多海报就越长"完全不设上限，真填多了（比如十几条亮点+十几条住宿）
+    # 海报会被撑成一个远超正常比例的"长图"，不再是"海报"该有的样子。这次给每个板块设了
+    # 一个显示上限，超出的部分不会丢掉，而是用"等共N项"这种提示收尾，保证整张海报的
+    # 长宽比例始终在一个正常海报该有的范围内，不会失控变成无限长图
+    MAX_LIST_ITEMS = 6
+    highlights_shown = highlights[:MAX_LIST_ITEMS]
+    highlights_more = len(highlights) - len(highlights_shown)
+    accommodations_shown = accommodations[:MAX_LIST_ITEMS]
+    accommodations_more = len(accommodations) - len(accommodations_shown)
+    MAX_LOCATIONS = 8
+    all_locations = manifest.get("locations") or []
+    locations_shown = all_locations[:MAX_LOCATIONS]
+    locations_more = len(all_locations) - len(locations_shown)
+
+    # 画布高度按内容动态撑高：填得越多，海报就越长，但现在有了上面那个"每板块最多显示几条"
+    # 的上限兜底，不会再无限长下去
     extra_h = 0
-    if highlights:
-        extra_h += 90 + len(highlights) * 46
-    if accommodations:
-        extra_h += 90 + len(accommodations) * 46
+    if highlights_shown:
+        extra_h += 90 + len(highlights_shown) * 46 + (40 if highlights_more > 0 else 0)
+    if accommodations_shown:
+        extra_h += 90 + len(accommodations_shown) * 46 + (40 if accommodations_more > 0 else 0)
     if departure_info:
         extra_h += 90
-    canvas_h = 1920 + extra_h
+    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
+    canvas_h = min(1920 + extra_h, 3000)
     has_extra_content = extra_h > 0
 
     # 关键修复：照片不能被强行拉伸去撑满整个加长后的画布（那样画面会变形拉花）。
@@ -316,10 +332,14 @@ def build_poster_standard(manifest, bg_img, out_path):
     f_price_unit = font([NOTO_BOLD], 26)
     f_footer = font([NOTO_REGULAR], 24)
 
-    # 左上角：景点清单
+    # 左上角：景点清单（超过上限的部分用"等共N个目的地"收尾，不会无限往下排挤占标题的位置）
     y = 56
-    for loc in manifest.get("locations") or []:
+    for loc in locations_shown:
         draw.text((48, y), f"· {safe_text(loc)}", font=f_loc, fill=(255, 255, 255, 255),
+                   stroke_width=2, stroke_fill=(0, 0, 0, 200))
+        y += 46
+    if locations_more > 0:
+        draw.text((48, y), f"· 等共{len(all_locations)}个目的地", font=f_loc, fill=(255, 255, 255, 220),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
         y += 46
 
@@ -364,7 +384,7 @@ def build_poster_standard(manifest, bg_img, out_path):
     # 内容区从这里开始往下堆叠：体验亮点 -> 住宿亮点 -> 出发地 -> 价格 -> footer
     content_y = canvas_h - extra_h - 500
 
-    def draw_section_list(heading, items, y_start):
+    def draw_section_list(heading, items, y_start, more_count=0):
         draw.text((48, y_start), heading, font=f_section_head, fill=(240, 210, 30, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
         yy = y_start + 62
@@ -372,12 +392,16 @@ def build_poster_standard(manifest, bg_img, out_path):
             draw.text((48, yy), f"{idx}. {safe_text(item)}", font=f_section_item, fill=(255, 255, 255, 240),
                        stroke_width=1, stroke_fill=(0, 0, 0, 200))
             yy += 46
+        if more_count > 0:
+            draw.text((48, yy), f"···等共{len(items) + more_count}项", font=f_section_item, fill=(255, 255, 255, 200),
+                       stroke_width=1, stroke_fill=(0, 0, 0, 200))
+            yy += 40
         return yy + 20
 
-    if highlights:
-        content_y = draw_section_list(f"【{safe_text(highlights_label)}】", highlights, content_y)
-    if accommodations:
-        content_y = draw_section_list(f"【{safe_text(accommodations_label)}】", accommodations, content_y)
+    if highlights_shown:
+        content_y = draw_section_list(f"【{safe_text(highlights_label)}】", highlights_shown, content_y, highlights_more)
+    if accommodations_shown:
+        content_y = draw_section_list(f"【{safe_text(accommodations_label)}】", accommodations_shown, content_y, accommodations_more)
     if departure_info:
         draw.text((48, content_y), safe_text(departure_info), font=f_section_head, fill=(255, 255, 255, 245),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
@@ -648,7 +672,8 @@ def build_poster_recruit(manifest, bg_img, out_path):
     if course_info:
         y_est += 90 + len(course_info) * 74
     y_est += 160  # 底部tagline+留白
-    canvas_h = max(1920, y_est)
+    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
+    canvas_h = min(max(1920, y_est), 3000)
 
     canvas = Image.new("RGBA", (W, canvas_h), CREAM)
     photo = cover_resize(bg_img, W, photo_h).convert("RGBA")
@@ -790,7 +815,8 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
         extra_h += len(course_info) * 58
     if overview_text:
         extra_h += 240
-    canvas_h = max(1920, 1500 + extra_h)
+    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
+    canvas_h = min(max(1920, 1500 + extra_h), 3000)
 
     canvas = Image.new("RGBA", (W, canvas_h), DARK)
     photo = cover_resize(bg_img, W, canvas_h).convert("RGBA")
@@ -881,7 +907,8 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     if achievement_items:
         rows = (len(achievement_items) + 1) // 2
         extra_h += 56 + rows * 52
-    canvas_h = max(1920, 1560 + extra_h)
+    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
+    canvas_h = min(max(1920, 1560 + extra_h), 3000)
 
     canvas = Image.new("RGBA", (W, canvas_h), CREAM)
     draw = ImageDraw.Draw(canvas, "RGBA")
