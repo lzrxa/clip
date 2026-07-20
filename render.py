@@ -334,6 +334,7 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     position_map = {
         "top": (8, 90),
         "middle": (2, 960),
+        "lower": (2, 420),
         "bottom": (2, 110),
     }
     alignment, margin_v = position_map.get(position, position_map["bottom"])
@@ -551,7 +552,7 @@ def main():
         # "middle"这里也用跟主路径一样的"从底部往上锚定"方式，理由跟build_subtitle_ass里注释的一样：
         # 真正的正中心对齐在换行行数不一致时会显得位置来回跳。这个兜底路径没法像主路径那样逐条
         # 微调，只能给一个折中的固定锚点，但至少比之前的"5"（正中心）稳定
-        _pos_map = {"top": (8, 90), "middle": (2, 850), "bottom": (2, 110)}
+        _pos_map = {"top": (8, 90), "middle": (2, 850), "lower": (2, 420), "bottom": (2, 110)}
         _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
         _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
         _color_tag = rgb_to_ass_bgr(_color_rgb)
