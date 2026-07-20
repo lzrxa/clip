@@ -175,7 +175,23 @@ def split_text_into_single_line_chunks(text, font_size, canvas_width=1080, margi
         remaining = remaining[split_pos:]
     if remaining:
         chunks.append(remaining)
-    return chunks
+
+    # 按标点切完之后，偶尔会剩下一两个字的"孤字"小段（比如恰好在句尾标点前一两个字的地方
+    # 被切开），单独显示成一段的时候，画面上会突然只剩一个字，看着很突兀，这就是这次反馈的
+    # "解说字幕单独出现一个字"的真正原因。这里补一道合并处理：长度不够的小段直接并到
+    # 相邻的一段里（优先并到前一段，如果自己就是切出来的第一段就并到后一段），宁可某一段
+    # 稍微超出"刚好一行宽度"这个理想尺寸，也不会再出现孤零零一个字单独展示的情况
+    min_chunk_len = max(2, max_chars // 3)
+    merged = []
+    for chunk in chunks:
+        if merged and len(chunk) < min_chunk_len:
+            merged[-1] = merged[-1] + chunk
+        else:
+            merged.append(chunk)
+    if len(merged) > 1 and len(merged[0]) < min_chunk_len:
+        merged[1] = merged[0] + merged[1]
+        merged = merged[1:]
+    return merged
 
 
 def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
