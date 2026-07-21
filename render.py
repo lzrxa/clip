@@ -293,6 +293,79 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, col
     return True
 
 
+# 底部字幕三种风格的具体样式参数：(字体风格, 主色, 副色/交替色或None, 是否要背景色块, 背景色)
+# - news：新闻字幕式，仿照电视新闻下方的"信息条"，一块实色底配白字，庄重、信息感强
+# - colorful：彩色字幕式，白色/金色逐行交替（跟标题字幕的多色交替是同一个思路），不加背景块
+# - artistic：艺术字幕式，站酷快乐体+金色，不加背景块，走活泼路线
+BOTTOM_CAPTION_STYLE_PRESETS = {
+    "news": {"font_style": "standard", "primary": (255, 255, 255), "secondary": None, "box": True, "back": "&H00701408&"},
+    "colorful": {"font_style": "standard", "primary": (255, 255, 255), "secondary": (255, 204, 0), "box": False, "back": None},
+    "artistic": {"font_style": "artistic", "primary": (255, 204, 0), "secondary": None, "box": False, "back": None},
+}
+
+
+def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news"):
+    """底部字幕：跟开头顶部的标题字幕是同一个思路的另一层，位置在画面底部，内容也是AI写脚本
+    时额外生成的一组文字（自己独立的内容，跟解说词、标题字幕都不是同一段话）。三种风格靠
+    BOTTOM_CAPTION_STYLE_PRESETS分别配置颜色/背景/字体，视觉效果完全不同：
+    - 新闻字幕式：底部一块实色信息条，仿电视新闻下方那种"字幕条"
+    - 彩色字幕式：白金两色逐行交替，不加背景块，风格上呼应标题字幕
+    - 艺术字幕式：站酷快乐体+金色，走活泼路线
+    显示时长支持传具体秒数，也支持"persist"（在main()里已经转换成总时长的具体秒数了，这里
+    只处理数字）。这层是完全独立的第三层ASS字幕，在ffmpeg里跟解说字幕、标题字幕链式叠加，
+    互不冲突；生成失败/没内容不影响主流程。
+    """
+    if not lines:
+        return False
+    preset = BOTTOM_CAPTION_STYLE_PRESETS.get(style, BOTTOM_CAPTION_STYLE_PRESETS["news"])
+    font_name = resolve_subtitle_font(preset["font_style"], True)
+    primary_tag = rgb_to_ass_bgr(preset["primary"])
+    secondary_tag = rgb_to_ass_bgr(preset["secondary"]) if preset["secondary"] else None
+
+    def escape_ass_text(t):
+        return str(t).replace("{", "").replace("}", "").replace("\\", "").strip()
+
+    styled_parts = []
+    for idx, line in enumerate(lines):
+        clean_line = escape_ass_text(line)
+        if not clean_line:
+            continue
+        color = secondary_tag if (secondary_tag and idx % 2 == 1) else primary_tag
+        sub_lines = split_text_into_single_line_chunks(clean_line, font_size)
+        wrapped_line = "\\N".join(sub_lines)
+        styled_parts.append(f"{{\\c{color}}}{wrapped_line}")
+    if not styled_parts:
+        return False
+    text = "\\N".join(styled_parts)
+
+    border_style = 3 if preset["box"] else 1
+    outline_val = 10 if preset["box"] else 4
+    back_colour = preset["back"] if preset["box"] else "&H000000&"
+    # 底部字幕锚定在画面偏下方（比解说字幕的"下方"选项再靠上一点，避免两层字幕如果同时开启
+    # 会完全重叠在同一行）
+    margin_v = 260
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{font_name},{font_size},{primary_tag},{primary_tag},&H000000&,{back_colour},0,0,0,0,100,100,0,0,"
+        f"{border_style},{outline_val},0,2,60,60,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    end_time = sec_to_ass_time(duration_sec)
+    dialogue = f"Dialogue: 0,0:00:00.00,{end_time},Default,,0,0,0,,{text}\n"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(header + dialogue)
+    return True
+
+
 NUMBER_HIGHLIGHT_PATTERN = re.compile(r"\d+\.?\d*%?")
 
 
@@ -460,6 +533,20 @@ def main():
     shots = manifest["shots"]
     if not shots:
         raise RuntimeError("该任务没有分镜数据")
+    # 标题字幕/底部字幕选"一直保持"的时候，需要知道整条视频最终大概有多长，让这层字幕的
+    # 结束时间对齐到视频结尾，而不是只显示固定的几秒——这里按每个镜头的时长加总估算一下
+    total_video_duration = sum(float(s.get("duration_sec") or 3) for s in shots)
+
+    def resolve_caption_duration(value, fallback):
+        """标题字幕/底部字幕的显示时长，除了具体秒数，还支持"persist"这个特殊值（一直保持，
+        对齐到整条视频结束），这里统一处理，不是数字的情况就不能直接float()转换"""
+        if value == "persist":
+            return total_video_duration
+        try:
+            return float(value) if value else fallback
+        except (TypeError, ValueError):
+            return fallback
+
     bgm_url = manifest.get("bgm_url")
     task_voice = manifest.get("tts_voice") or TTS_VOICE
     bgm_volume = manifest.get("bgm_volume")
@@ -477,7 +564,7 @@ def main():
     enable_title_caption = True if enable_title_caption is None else bool(enable_title_caption)
     title_caption_color_scheme = manifest.get("title_caption_color_scheme") or "gold"
     title_caption_duration = manifest.get("title_caption_duration")
-    title_caption_duration = float(title_caption_duration) if title_caption_duration else 4.5
+    title_caption_duration = resolve_caption_duration(title_caption_duration, 4.5)
     # 标题字幕的字号/字体，之前是直接借用解说字幕那两个设置，跟着"字幕字号/字体样式"变——
     # 但标题字幕（开头几秒的悬念大标题）和解说字幕（逐句同步的说明文字）本来就是两种不同用途的
     # 东西，样式没必要绑在一起，这里改成读取各自独立的字段，互不影响
@@ -489,6 +576,11 @@ def main():
     subtitle_bg_box = bool(manifest.get("subtitle_bg_box"))
     subtitle_font_style = manifest.get("subtitle_font_style") or "standard"
     subtitle_box_scheme = manifest.get("subtitle_box_scheme") or "black"
+    bottom_caption_lines = manifest.get("bottom_caption_lines") or []
+    enable_bottom_caption = bool(manifest.get("enable_bottom_caption"))
+    bottom_caption_style = manifest.get("bottom_caption_style") or "news"
+    bottom_caption_duration = manifest.get("bottom_caption_duration")
+    bottom_caption_duration = resolve_caption_duration(bottom_caption_duration, 6)
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -581,6 +673,17 @@ def main():
                 print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
         except Exception as e:
             print("开头标题字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
+
+    # 底部字幕，同样是独立的第三层，跟标题字幕是同一套"锦上添花、出问题就跳过"的处理方式
+    if enable_bottom_caption and bottom_caption_lines:
+        bottom_caption_path = f"{WORKDIR}/bottom_caption.ass"
+        try:
+            if build_bottom_caption_ass(bottom_caption_lines, bottom_caption_path, duration_sec=bottom_caption_duration,
+                                         font_size=subtitle_size, style=bottom_caption_style):
+                subtitle_filter = f"{subtitle_filter},subtitles={bottom_caption_path}:fontsdir={FONTS_DIR}"
+                print(f"底部字幕生成完成，共 {len(bottom_caption_lines)} 行")
+        except Exception as e:
+            print("底部字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
 
     run([
         "ffmpeg", "-y", "-i", concat_path,
