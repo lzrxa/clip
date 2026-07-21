@@ -25,11 +25,12 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji
           pip install --quiet edge-tts requests boto3 Pillow
 
-      - name: 下载字幕活泼艺术字体（站酷快乐体，Google Fonts官方OFL开源协议分发，免费商用，
-          跟海报标题用的是同一份字体，风格统一）
+      - name: 下载字幕艺术字体（站酷快乐体+站酷庆科黄油体，Google Fonts官方OFL开源协议分发，
+          免费商用，站酷快乐体跟海报标题用的是同一份字体）
         run: |
           mkdir -p fonts
           curl -sL -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
+          curl -sL -o fonts/ZCOOLQingKeHuangYou-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
 
       - name: 执行渲染
         env:
