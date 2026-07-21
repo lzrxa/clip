@@ -304,7 +304,7 @@ BOTTOM_CAPTION_STYLE_PRESETS = {
 }
 
 
-def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news"):
+def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", max_lines=2):
     """底部字幕：跟开头顶部的标题字幕是同一个思路的另一层，位置在画面底部，内容也是AI写脚本
     时额外生成的一组文字（自己独立的内容，跟解说词、标题字幕都不是同一段话）。三种风格靠
     BOTTOM_CAPTION_STYLE_PRESETS分别配置颜色/背景/字体，视觉效果完全不同：
@@ -314,6 +314,12 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
     显示时长支持传具体秒数，也支持"persist"（在main()里已经转换成总时长的具体秒数了，这里
     只处理数字）。这层是完全独立的第三层ASS字幕，在ffmpeg里跟解说字幕、标题字幕链式叠加，
     互不冲突；生成失败/没内容不影响主流程。
+
+    max_lines: 底部字幕最多显示几行——Worker那边生成脚本的时候已经卡过AI最多给2条、每条
+    最多12个字了，但这里是真正决定"最终画面上到底显示几行"的地方（同一条内容在不同字号下
+    折算出来的实际行数不一样），所以在这里再兜底一次：不管上游传来多少条、每条多长，最终
+    渲染出来的总行数严格不超过max_lines，超出的部分直接截断，不会为了塞下更多内容硬挤成
+    三行以上、占用太多画面空间。
     """
     if not lines:
         return False
@@ -326,12 +332,19 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
         return str(t).replace("{", "").replace("}", "").replace("\\", "").strip()
 
     styled_parts = []
+    lines_used = 0
     for idx, line in enumerate(lines):
+        if lines_used >= max_lines:
+            break
         clean_line = escape_ass_text(line)
         if not clean_line:
             continue
         color = secondary_tag if (secondary_tag and idx % 2 == 1) else primary_tag
         sub_lines = split_text_into_single_line_chunks(clean_line, font_size)
+        remaining_budget = max_lines - lines_used
+        if len(sub_lines) > remaining_budget:
+            sub_lines = sub_lines[:remaining_budget]
+        lines_used += len(sub_lines)
         wrapped_line = "\\N".join(sub_lines)
         styled_parts.append(f"{{\\c{color}}}{wrapped_line}")
     if not styled_parts:
