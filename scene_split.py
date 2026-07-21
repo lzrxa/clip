@@ -153,10 +153,13 @@ def recognize_scene(frame_path):
         "你是短视频素材管理专家，帮忙识别视频截图里的场景内容，用于素材库自动打标签、自动分类。"
         "请判断这张图片是否值得作为一条独立素材保留（排除纯黑屏、纯色过渡、完全模糊看不清内容、"
         "字幕卡/黑场转场这类没有实际画面价值的截图），如果值得保留，识别出图中的地点/景点名称"
-        "（不确定具体名字就写场景类型，比如'城市街景''海边''山景''室内'）、主要内容类型"
-        "（landmark地标建筑/person人物/scenery风光/food美食/other其它）、能看出的季节（春夏秋冬，"
-        "看不出就填null）。严格只返回JSON，不要有任何JSON以外的文字：\n"
-        '{"meaningful": true或false, "location": "地点名称", "subject_type": "landmark/person/scenery/food/other", '
+        "（不确定具体名字就写场景类型，比如'城市街景''海边''山景''室内'）、这个地点所在的省份"
+        "/大区（比如长城→北京、玉龙雪山→云南、看不出具体省份就填null，千万不要瞎猜一个不相关"
+        "的省份，宁可填null也不要编造）、主要内容类型（landmark地标建筑/person人物/scenery风光/"
+        "food美食/other其它）、能看出的季节（春夏秋冬，看不出就填null）。严格只返回JSON，不要有"
+        "任何JSON以外的文字：\n"
+        '{"meaningful": true或false, "location": "地点名称", "region": "省份/大区名称或null", '
+        '"subject_type": "landmark/person/scenery/food/other", '
         '"season": "春/夏/秋/冬或null", "tags": "3-5个逗号分隔的中文标签"}'
     )
     messages = [
@@ -225,10 +228,12 @@ def main():
                 continue
 
             location = (info.get("location") or "未知场景").strip()
+            region = info.get("region")
+            region = region.strip() if isinstance(region, str) and region.strip() else None
             subject_type = info.get("subject_type") or "other"
             season = info.get("season")
             tags = info.get("tags") or location
-            print(f"片段{idx}（{start:.1f}s-{end:.1f}s）识别为：{location}（{subject_type}）")
+            print(f"片段{idx}（{start:.1f}s-{end:.1f}s）识别为：{location}（省份/大区：{region or '未知'}，{subject_type}）")
 
             # 代表图片：直接复用刚才截的那一帧
             image_key = f"assets/scenesplit_{JOB_ID}_{idx}_img.jpg"
@@ -241,7 +246,7 @@ def main():
             s3.upload_file(clip_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
 
             results.append({
-                "location": location, "subject_type": subject_type, "season": season, "tags": tags,
+                "location": location, "region": region, "subject_type": subject_type, "season": season, "tags": tags,
                 "image_url": f"{R2_PUBLIC_BASE_URL}/{image_key}",
                 "video_url": f"{R2_PUBLIC_BASE_URL}/{video_key}",
                 "duration_sec": round(end - start, 1),
