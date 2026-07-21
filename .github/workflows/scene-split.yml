@@ -1,0 +1,71 @@
+name: Scene Split
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: '拆条任务ID'
+        required: true
+        type: string
+      source_key:
+        description: '要拆分的源视频在R2里的key'
+        required: true
+        type: string
+      task_domain:
+        description: '导入的素材归到哪个领域（travel/music）'
+        required: false
+        type: string
+        default: 'travel'
+      task_region:
+        description: '导入的素材标注哪个地区'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  scene-split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GitHub Models（免费AI推理接口）要求workflow明确声明这个权限才能调用，不然自动生成的
+    # GITHUB_TOKEN默认是没有这个权限的，调用会被拒绝——这是GitHub官方文档写明的必需步骤
+    permissions:
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖（ffmpeg + 上传/回调/AI识别所需库）
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          pip install --quiet requests boto3
+
+      - name: 执行智能拆条
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          SOURCE_KEY: ${{ inputs.source_key }}
+          TASK_DOMAIN: ${{ inputs.task_domain }}
+          TASK_REGION: ${{ inputs.task_region }}
+          PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
+          RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scene_split.py
+
+      - name: 失败时也要通知Cloudflare（避免任务卡在"处理中"）
+        if: failure()
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
+          RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
+        run: |
+          curl -s -X POST "$PAGES_BASE_URL/api/scene-split-callback" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": \"$JOB_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"拆条步骤执行失败，请查看 GitHub Actions 日志\"}"
