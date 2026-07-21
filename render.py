@@ -84,6 +84,10 @@ SUBTITLE_COLOR_MAP = {
     "yellow": (255, 214, 92),
     "cyan": (120, 220, 255),
     "red": (255, 90, 60),
+    "green": (110, 220, 140),
+    "purple": (200, 150, 255),
+    "pink": (255, 150, 190),
+    "orange": (255, 160, 80),
 }
 
 # 字幕字体两个选项："标准黑体"是Noto Sans CJK的最粗字重，规规矩矩、清晰易读；"活泼艺术字"是
@@ -91,7 +95,9 @@ SUBTITLE_COLOR_MAP = {
 # 圆润饱满，短视频平台上常见的那种"更漂亮"的字幕大多是这类风格的字体，不是靠描边/阴影做出来的
 def resolve_subtitle_font(font_style, bold):
     if font_style == "artistic":
-        return "ZCOOL KuaiLe"  # 站酷快乐体本身只有一个常规字重，没有"加粗"这个概念，bold参数对它不生效
+        return "ZCOOL KuaiLe"  # 站酷快乐体，圆润饱满、偏可爱活泼；本身只有一个常规字重，没有"加粗"这个概念，bold参数对它不生效
+    if font_style == "artistic2":
+        return "ZCOOL QingKe HuangYou"  # 站酷庆科黄油体，比快乐体更粗壮扎实、更有冲击力，同样只有常规字重
     return "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
 
 
@@ -109,6 +115,14 @@ def rgb_to_ass_bgr(rgb):
     """ASS字幕颜色是 BGR 顺序（不是常见的RGB），这里做一次转换"""
     r, g, b = rgb
     return f"&H{b:02X}{g:02X}{r:02X}&"
+
+
+def rgb_to_ass_back_colour(rgb, alpha_hex="00"):
+    """BackColour（背景色块）比普通文字颜色多一位alpha透明度前缀，格式是&HAABBGGRR&——
+    alpha_hex传"00"是完全不透明（新闻字幕式那种实色信息条用这个），传比较大的十六进制值
+    可以做半透明效果"""
+    r, g, b = rgb
+    return f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}&"
 
 
 def srt_time_to_sec(t):
@@ -226,11 +240,17 @@ def wrap_subtitle_text(text, font_size, canvas_width=1080, margin=60):
 
 
 TITLE_CAPTION_COLOR_SCHEMES = {
-    # 每个配色方案是(主色, 副色)，逐行交替使用，white固定打头，第二个颜色决定整体的"味道"
-    "gold": ((255, 255, 255), (255, 204, 0)),    # 白金，默认，新闻/热门内容通用
-    "red": ((255, 255, 255), (255, 66, 66)),     # 白红，更醒目/紧迫，适合促销、热点类
-    "blue": ((255, 255, 255), (100, 190, 255)),  # 白蓝，更冷静/信息感，适合科普、攻略类
-    "white": ((255, 255, 255), (255, 255, 255)),  # 纯白不交替，低调款，适合内容本身已经很有冲击力的素材
+    # 每个配色方案是(主色, 副色)，逐行交替使用，white固定打头，第二个颜色决定整体的"味道"——
+    # 标题字幕、底部字幕的"彩色字幕式"用的是同一份配色表，选项一致
+    "gold": ((255, 255, 255), (255, 204, 0)),      # 白金，默认，新闻/热门内容通用
+    "red": ((255, 255, 255), (255, 66, 66)),       # 白红，更醒目/紧迫，适合促销、热点类
+    "blue": ((255, 255, 255), (100, 190, 255)),    # 白蓝，更冷静/信息感，适合科普、攻略类
+    "green": ((255, 255, 255), (80, 220, 130)),    # 白绿，清新自然，适合旅游、健康类内容
+    "purple": ((255, 255, 255), (190, 130, 255)),  # 白紫，梦幻高级，适合美妆、艺术类内容
+    "pink": ((255, 255, 255), (255, 130, 180)),    # 白粉，甜美活泼，适合美食、萌宠类内容
+    "orange": ((255, 255, 255), (255, 140, 60)),   # 白橙，热情有活力，适合运动、促销类内容
+    "silver": ((255, 255, 255), (200, 200, 205)),  # 白银，低调高级，适合商务、科技类内容
+    "white": ((255, 255, 255), (255, 255, 255)),   # 纯白不交替，低调款，适合内容本身已经很有冲击力的素材
 }
 
 
@@ -297,14 +317,31 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, col
 # - news：新闻字幕式，仿照电视新闻下方的"信息条"，一块实色底配白字，庄重、信息感强
 # - colorful：彩色字幕式，白色/金色逐行交替（跟标题字幕的多色交替是同一个思路），不加背景块
 # - artistic：艺术字幕式，站酷快乐体+金色，不加背景块，走活泼路线
+# 新闻字幕式的信息条背景色选项——特意用比较深、比较沉的色调（不是鲜艳原色），实色大面积
+# 铺在画面上才不会显得刺眼，跟标题字幕/彩色字幕式那种"鲜艳交替色"是完全不同的用色思路
+NEWS_BAR_COLOR_RGB = {
+    "red": (130, 24, 24),
+    "blue": (22, 58, 110),
+    "green": (24, 82, 44),
+    "gold": (110, 82, 24),
+    "purple": (70, 30, 90),
+    "pink": (120, 40, 70),
+    "orange": (130, 66, 20),
+    "silver": (70, 70, 76),
+    "white": (28, 28, 32),  # "纯白"配色方案在信息条上没法直接用白底白字，这里退回深灰底，文字保持白色
+}
+
 BOTTOM_CAPTION_STYLE_PRESETS = {
-    "news": {"font_style": "standard", "primary": (255, 255, 255), "secondary": None, "box": True, "back": "&H00701408&"},
-    "colorful": {"font_style": "standard", "primary": (255, 255, 255), "secondary": (255, 204, 0), "box": False, "back": None},
-    "artistic": {"font_style": "artistic", "primary": (255, 204, 0), "secondary": None, "box": False, "back": None},
+    # font_style 和 box 是每种风格固定不变的部分（是否用艺术字体、是否要背景块）；
+    # 具体用什么颜色由 color_scheme 参数决定，三种风格各自从不同的调色板里取色：
+    # news 从 NEWS_BAR_COLOR_RGB 取信息条底色，colorful/artistic 从 TITLE_CAPTION_COLOR_SCHEMES 取字色
+    "news": {"font_style": "standard", "box": True},
+    "colorful": {"font_style": "standard", "box": False},
+    "artistic": {"font_style": "artistic", "box": False},
 }
 
 
-def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", max_lines=2):
+def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", color_scheme="gold", max_lines=2):
     """底部字幕：跟开头顶部的标题字幕是同一个思路的另一层，位置在画面底部，内容也是AI写脚本
     时额外生成的一组文字（自己独立的内容，跟解说词、标题字幕都不是同一段话）。三种风格靠
     BOTTOM_CAPTION_STYLE_PRESETS分别配置颜色/背景/字体，视觉效果完全不同：
@@ -325,8 +362,22 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
         return False
     preset = BOTTOM_CAPTION_STYLE_PRESETS.get(style, BOTTOM_CAPTION_STYLE_PRESETS["news"])
     font_name = resolve_subtitle_font(preset["font_style"], True)
-    primary_tag = rgb_to_ass_bgr(preset["primary"])
-    secondary_tag = rgb_to_ass_bgr(preset["secondary"]) if preset["secondary"] else None
+
+    # 三种风格各自从不同的调色板里取色：news取信息条底色（配白字），colorful是白色+配色方案的
+    # 第二色交替，artistic是单独用配色方案的第二色（金/红/蓝那些鲜艳色，套上艺术字体更好看，
+    # 不用白色单独显示，视觉上更有辨识度）
+    if style == "news":
+        bar_rgb = NEWS_BAR_COLOR_RGB.get(color_scheme, NEWS_BAR_COLOR_RGB["red"])
+        primary_tag = rgb_to_ass_bgr((255, 255, 255))
+        secondary_tag = None
+    else:
+        _, secondary_rgb = TITLE_CAPTION_COLOR_SCHEMES.get(color_scheme, TITLE_CAPTION_COLOR_SCHEMES["gold"])
+        if style == "artistic":
+            primary_tag = rgb_to_ass_bgr(secondary_rgb)
+            secondary_tag = None
+        else:  # colorful
+            primary_tag = rgb_to_ass_bgr((255, 255, 255))
+            secondary_tag = rgb_to_ass_bgr(secondary_rgb)
 
     def escape_ass_text(t):
         return str(t).replace("{", "").replace("}", "").replace("\\", "").strip()
@@ -353,7 +404,7 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
 
     border_style = 3 if preset["box"] else 1
     outline_val = 10 if preset["box"] else 4
-    back_colour = preset["back"] if preset["box"] else "&H000000&"
+    back_colour = rgb_to_ass_back_colour(bar_rgb) if preset["box"] else "&H000000&"
     # 底部字幕锚定在画面偏下方（比解说字幕的"下方"选项再靠上一点，避免两层字幕如果同时开启
     # 会完全重叠在同一行）
     margin_v = 260
@@ -592,6 +643,7 @@ def main():
     bottom_caption_lines = manifest.get("bottom_caption_lines") or []
     enable_bottom_caption = bool(manifest.get("enable_bottom_caption"))
     bottom_caption_style = manifest.get("bottom_caption_style") or "news"
+    bottom_caption_color_scheme = manifest.get("bottom_caption_color_scheme") or "gold"
     bottom_caption_duration = manifest.get("bottom_caption_duration")
     bottom_caption_duration = resolve_caption_duration(bottom_caption_duration, 6)
 
@@ -692,7 +744,7 @@ def main():
         bottom_caption_path = f"{WORKDIR}/bottom_caption.ass"
         try:
             if build_bottom_caption_ass(bottom_caption_lines, bottom_caption_path, duration_sec=bottom_caption_duration,
-                                         font_size=subtitle_size, style=bottom_caption_style):
+                                         font_size=subtitle_size, style=bottom_caption_style, color_scheme=bottom_caption_color_scheme):
                 subtitle_filter = f"{subtitle_filter},subtitles={bottom_caption_path}:fontsdir={FONTS_DIR}"
                 print(f"底部字幕生成完成，共 {len(bottom_caption_lines)} 行")
         except Exception as e:
