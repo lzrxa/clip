@@ -19,7 +19,7 @@ R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
 R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]
 R2_BUCKET_NAME = os.environ["R2_BUCKET_NAME"]
 R2_PUBLIC_BASE_URL = os.environ["R2_PUBLIC_BASE_URL"].rstrip("/")
-TTS_VOICE = os.environ.get("TTS_VOICE") or "zh-CN-XiaoxiaoNeural"
+TTS_VOICE = os.environ.get("TTS_VOICE") or "zh-CN-YunxiNeural"
 
 WORKDIR = "work"
 FONTS_DIR = "fonts"  # render.yml会把站酷快乐体下载到这个目录，跟poster.py用的是同一套约定
