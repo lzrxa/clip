@@ -839,8 +839,12 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             y_est += 100
         if track2_details:
             y_est += 60 + len(track2_details) * 56
-    if manifest.get("wechat_link") or manifest.get("logo_url"):
+    has_qr_setup = bool(manifest.get("wechat_link") or manifest.get("logo_url"))
+    has_cta_text = bool(manifest.get("cta_headline") or manifest.get("cta_desc"))
+    if has_qr_setup:
         y_est += 520
+    elif has_cta_text:
+        y_est += 280
     if terms_items:
         y_est += 80 + len(terms_items) * 56
     if manifest.get("disclaimer_text"):
@@ -975,23 +979,30 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         y = draw_track(y, track2_label, safe_text(manifest.get("track2_subtitle") or ""),
                         track2_checklist, manifest.get("track2_bonus"), track2_details)
 
-    # 二维码预约区：深色底突出，跟前面的浅色内容区形成节奏上的变化
+    # 二维码预约区：深色底突出，跟前面的浅色内容区形成节奏上的变化。
+    # 重要修正：这一整块之前是"没配二维码/logo，连带headline和desc这些文字说明也全部不显示"——
+    # 等于CTA这个最关键的招呼行动号召，因为漏配了一张二维码图片就整段消失，用户很容易看不出
+    # 是哪里的问题（症状是"填了的文案凭空消失了"）。现在改成：只要填了cta_headline或
+    # cta_desc其中一个，这一段就会显示（深色背景+文字），二维码是"如果配了就加上"的锦上添花，
+    # 不是这一整段能不能显示的前提条件
     contact_img = get_contact_image(manifest, 280)
-    if contact_img:
-        cta_h = 520
+    cta_headline_raw = safe_text(manifest.get("cta_headline") or "")
+    cta_desc_raw = safe_text(manifest.get("cta_desc") or "")
+    if contact_img or cta_headline_raw or cta_desc_raw:
+        cta_h = 520 if contact_img else 280
         draw.rectangle([0, y, W, y + cta_h], fill=DEEP_BLUE)
-        cta_headline = safe_text(manifest.get("cta_headline") or "扫码一键预约")
+        cta_headline = cta_headline_raw or "扫码一键预约"
         bbox = draw.textbbox((0, 0), cta_headline, font=f_cta_big)
         draw.text(((W - (bbox[2] - bbox[0])) / 2, y + 40), cta_headline, font=f_cta_big, fill=GOLD)
-        cta_desc = safe_text(manifest.get("cta_desc") or "")
-        if cta_desc:
-            desc_wrapped = textwrap.fill(cta_desc, width=26)
+        if cta_desc_raw:
+            desc_wrapped = textwrap.fill(cta_desc_raw, width=26)
             bbox2 = draw.multiline_textbbox((0, 0), desc_wrapped, font=f_icon_desc, spacing=8)
             draw.multiline_text(((W - (bbox2[2] - bbox2[0])) / 2, y + 130), desc_wrapped,
                                  font=f_icon_desc, fill=(220, 230, 245), spacing=8, align="center")
-        qr_bg = Image.new("RGBA", (300, 300), WHITE)
-        qr_bg.paste(contact_img, (10, 10))
-        canvas.paste(qr_bg, ((W - 300) // 2, y + 200), qr_bg)
+        if contact_img:
+            qr_bg = Image.new("RGBA", (300, 300), WHITE)
+            qr_bg.paste(contact_img, (10, 10))
+            canvas.paste(qr_bg, ((W - 300) // 2, y + 200), qr_bg)
         y += cta_h + 40
 
     if terms_items:
