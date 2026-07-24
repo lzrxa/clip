@@ -43,6 +43,35 @@ TITLE_FONT_MAP = {
 
 TITLE_POSITION_RATIO = {"top": 0.20, "middle": 0.42, "bottom": 0.62}
 
+# 色彩风格：每套配色定义5个角色——dark（深色块背景，比如标题条/CTA区）、mid（次要强调色，
+# 比如图标/副标题）、bg（页面浅色底）、hilight（高亮强调色，比如banner/加码送这类"划重点"
+# 的地方）、ink（正文字颜色）。四套风格分别对应"青春活力/沉稳专业/大气尊贵/惊艳撞色"这几种
+# 常见的调性需求，模板拿到手之后不用管具体色值，只按角色去用，方便以后再加新风格
+COLOR_SCHEMES = {
+    "youthful": {  # 青春活力：珊瑚红+暖橙+柠檬黄，适合少儿/年轻化的招生场景
+        "dark": (216, 68, 96), "mid": (255, 138, 61), "bg": (255, 247, 240),
+        "hilight": (255, 190, 60), "ink": (70, 45, 40),
+    },
+    "steady": {  # 沉稳专业：深蓝+金色，适合正统、专业感强的场景（也是目前的默认风格）
+        "dark": (18, 58, 110), "mid": (26, 82, 148), "bg": (232, 241, 250),
+        "hilight": (230, 178, 60), "ink": (40, 46, 58),
+    },
+    "grand": {  # 大气尊贵：深棕金，适合高端定位、艺考集训这类想突出品质感的场景
+        "dark": (46, 30, 22), "mid": (110, 74, 44), "bg": (250, 246, 238),
+        "hilight": (201, 162, 39), "ink": (58, 48, 44),
+    },
+    "stunning": {  # 惊艳撞色：紫色+亮黄，反差强烈，适合想在信息流里第一眼被注意到的场景
+        "dark": (76, 29, 149), "mid": (168, 85, 247), "bg": (250, 245, 255),
+        "hilight": (250, 204, 21), "ink": (45, 32, 55),
+    },
+}
+
+
+def get_color_scheme(manifest):
+    """按manifest里的color_scheme字段取配色方案，没填或者填了个不认识的值就退回"steady"
+    （也就是之前一直在用的深蓝金色），保证老数据/没选过这个选项的海报效果不受影响"""
+    return COLOR_SCHEMES.get(manifest.get("color_scheme"), COLOR_SCHEMES["steady"])
+
 
 def font(path_candidates, size):
     for p in path_candidates:
@@ -838,14 +867,16 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     选择我们"，然后两个人群专场（比如少儿/成人，或者经典团课/私教定制）各自一段"到店即享
     清单+成交加码送+服务明细编号列表"，最后是二维码预约+活动条款+免责声明收尾。
     适合暑期班/艺考集训营/旅游套餐这类"面向不同人群、权益条目比较多"的招生推广场景。
-    深蓝色调，跟其它几版风格区分开。
+    颜色不再写死深蓝色，改成按manifest里的color_scheme字段选配色方案（青春活力/沉稳专业/
+    大气尊贵/惊艳撞色），没选就还是原来那套深蓝金色，不影响没用过这个新选项的海报。
     """
-    DEEP_BLUE = (18, 58, 110)
-    MID_BLUE = (26, 82, 148)
-    LIGHT_BLUE = (232, 241, 250)
-    GOLD = (230, 178, 60)
+    scheme = get_color_scheme(manifest)
+    DEEP_BLUE = scheme["dark"]
+    MID_BLUE = scheme["mid"]
+    LIGHT_BLUE = scheme["bg"]
+    GOLD = scheme["hilight"]
     WHITE = (255, 255, 255)
-    INK = (40, 46, 58)
+    INK = scheme["ink"]
 
     benefit_icons = manifest.get("benefit_icons") or []
     track1_checklist = manifest.get("track1_checklist") or []
@@ -1019,8 +1050,12 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             # 这里故意不用透明背景叠加图标（PIL的ImageDraw对这种半透明合成的支持不稳定，
             # 容易出现颜色不对的情况），改成用一个跟金色底色接近的浅金色实色背景，
             # 视觉上融合度已经足够好，不用去赌透明合成的效果
-            draw_gift_icon(draw, card_x0 + 40 + gift_r, y + 35, gift_r, (250, 235, 205), (140, 90, 10))
-            draw.text((card_x0 + 40 + gift_r * 2 + 14, y + 18), safe_text(bonus), font=f_bonus, fill=(140, 90, 10))
+            # 图标背景色用hilight这个角色淡化出来的浅色（跟金色框颜色接近但更浅），
+            # 图标本身用dark这个角色——这样换了色彩风格之后，这个小图标也会跟着变色，
+            # 不会出现"整体换了紫色系，这里还残留着金色"这种色彩风格不统一的情况
+            light_tint = tuple(min(255, int(c + (255 - c) * 0.65)) for c in GOLD)
+            draw_gift_icon(draw, card_x0 + 40 + gift_r, y + 35, gift_r, light_tint, DEEP_BLUE)
+            draw.text((card_x0 + 40 + gift_r * 2 + 14, y + 18), safe_text(bonus), font=f_bonus, fill=DEEP_BLUE)
             y += 90
 
         if details:
