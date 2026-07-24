@@ -292,6 +292,9 @@ def draw_phone_number(draw, manifest, font, y_from_bottom):
 
 
 def build_poster_standard(manifest, bg_img, out_path):
+    # 这版是照片为主的设计，深色/浅色板块不多，色彩风格只影响这一个金色强调色
+    # （价格数字、板块小标题、标签），换个风格能让强调色不再是清一色的金黄
+    ACCENT_GOLD = get_color_scheme(manifest)["hilight"]
     highlights = manifest.get("highlights") or []          # 亮点列表，标题文字由 highlights_label 决定
     accommodations = manifest.get("accommodations") or []   # 第二组列表，标题文字由 accommodations_label 决定
     # 这两组列表原本是给旅游海报设计的（"体验亮点"/"尊享下榻"），音乐培训这类其他领域的海报
@@ -391,7 +394,7 @@ def build_poster_standard(manifest, bg_img, out_path):
         bbox = draw.textbbox((0, 0), tag_text, font=f_tag)
         tw = bbox[2] - bbox[0]
         draw_pill(draw, ((W - tw - 32) // 2, mid_y), tag_text, f_tag,
-                  fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
+                  fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
         mid_y += 70
 
     title = safe_text(manifest.get("title") or "")
@@ -414,7 +417,7 @@ def build_poster_standard(manifest, bg_img, out_path):
     content_y = canvas_h - extra_h - 500
 
     def draw_section_list(heading, items, y_start, more_count=0):
-        draw.text((48, y_start), heading, font=f_section_head, fill=(240, 210, 30, 255),
+        draw.text((48, y_start), heading, font=f_section_head, fill=(*ACCENT_GOLD, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
         yy = y_start + 62
         for idx, item in enumerate(items, 1):
@@ -455,7 +458,7 @@ def build_poster_standard(manifest, bg_img, out_path):
             unit_w = bbox3[2] - bbox3[0]
             total_w = price_w + 8 + unit_w
             start_x = cx - total_w / 2
-            draw.text((start_x, py + 44), price_text, font=f_price, fill=(240, 210, 30, 255))
+            draw.text((start_x, py + 44), price_text, font=f_price, fill=(*ACCENT_GOLD, 255))
             draw.text((start_x + price_w + 8, py + 44 + (bbox2[3] - bbox3[3])), unit_text,
                        font=f_price_unit, fill=(255, 255, 255, 230))
             if i > 0:
@@ -467,7 +470,7 @@ def build_poster_standard(manifest, bg_img, out_path):
     if manifest.get("footer_tag"):
         footer_tag_text = safe_text(manifest["footer_tag"])
         rect = draw_pill(draw, (fx, footer_y), footer_tag_text, f_tag,
-                          fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
+                          fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
         fx = rect[2] + 16
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 6), safe_text(manifest["footer_text"]), font=f_subtitle, fill=(255, 255, 255, 230))
@@ -498,6 +501,7 @@ def build_poster_standard(manifest, bg_img, out_path):
 
 def build_poster_brand(manifest, bg_img, out_path):
     """纯大字风光版：不放价格，突出情绪和品牌感，适合形象宣传而非促销。"""
+    ACCENT_GOLD = get_color_scheme(manifest)["hilight"]
     canvas = cover_resize(bg_img, W, H).convert("RGBA")
     add_vertical_gradient(canvas, (0, 0, W, 460), 120, 20)
     add_vertical_gradient(canvas, (0, H - 380, W, H), 10, 170)
@@ -524,7 +528,7 @@ def build_poster_brand(manifest, bg_img, out_path):
         bbox = draw.textbbox((0, 0), tag_text, font=f_tagfont)
         tw = bbox[2] - bbox[0]
         draw_pill(draw, ((W - tw - 32) // 2, mid_y), tag_text, f_tagfont,
-                  fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
+                  fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
         mid_y += 74
 
     title = safe_text(manifest.get("title") or "")
@@ -562,6 +566,7 @@ def build_poster_brand(manifest, bg_img, out_path):
 
 def build_poster_promo(manifest, bg_img, out_path):
     """促销价格版：价格是绝对视觉焦点，标题和景点清单缩小让位。"""
+    ACCENT_GOLD = get_color_scheme(manifest)["hilight"]
     canvas = cover_resize(bg_img, W, H).convert("RGBA")
     add_vertical_gradient(canvas, (0, 0, W, 380), 130, 30)
     add_vertical_gradient(canvas, (0, H - 760, W, H), 20, 210)
@@ -610,7 +615,7 @@ def build_poster_promo(manifest, bg_img, out_path):
         unit_w = bbox3[2] - bbox3[0]
         total_w = price_w + 12 + unit_w
         start_x = (W - total_w) / 2
-        draw.text((start_x, hero_y), price_text, font=f_hero_price, fill=(240, 210, 30, 255),
+        draw.text((start_x, hero_y), price_text, font=f_hero_price, fill=(*ACCENT_GOLD, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 180))
         draw.text((start_x + price_w + 12, hero_y + (bbox2[3] - bbox3[3])), unit_text,
                    font=f_hero_unit, fill=(255, 255, 255, 240))
@@ -631,7 +636,7 @@ def build_poster_promo(manifest, bg_img, out_path):
     if manifest.get("footer_tag"):
         footer_tag_text = safe_text(manifest["footer_tag"])
         rect = draw_pill(draw, (fx, footer_y), footer_tag_text, f_tag,
-                          fill=(240, 210, 30, 255), text_fill=(30, 30, 20, 255))
+                          fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
         fx = rect[2] + 16
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 4), safe_text(manifest["footer_text"]), font=f_footer, fill=(255, 255, 255, 220))
@@ -719,10 +724,11 @@ def build_poster_recruit(manifest, bg_img, out_path):
     has_price = bool(discounted_price)
     has_teacher = bool(teacher_name)
 
-    CREAM = (250, 246, 238)
-    MAROON = (109, 38, 30)
-    GOLD = (196, 142, 42)
-    INK = (58, 48, 44)
+    scheme = get_color_scheme(manifest)
+    CREAM = scheme["bg"]
+    MAROON = scheme["dark"]
+    GOLD = scheme["hilight"]
+    INK = scheme["ink"]
 
     # 画布高度按内容动态撑高，跟标准版的思路一样，只是这里是"浅色内容区"为主、照片是
     # 顶部的点缀，跟标准版"照片为主、深色内容区在底部"正好反过来
@@ -1145,9 +1151,12 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
     overview_text = safe_text(manifest.get("overview_text") or "")
     locations = manifest.get("locations") or []  # 复用做"底部信息行"（培训地点/培训时间）
 
-    DARK = (20, 24, 34)
-    GOLD = (196, 160, 90)
-    GOLD_LIGHT = (226, 200, 148)
+    scheme = get_color_scheme(manifest)
+    DARK = scheme["dark"]
+    GOLD = scheme["hilight"]
+    # GOLD_LIGHT是GOLD淡化之后的版本，用在次要文字上（比如课程信息的正文），
+    # 不用另外在配色方案里专门定义一个角色，用hilight混白算出来就行
+    GOLD_LIGHT = tuple(min(255, int(c + (255 - c) * 0.4)) for c in GOLD)
 
     extra_h = 0
     if course_info:
@@ -1236,9 +1245,10 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     bio_items = manifest.get("checklist_items") or []
     achievement_items = manifest.get("highlights") or []
 
-    CREAM = (238, 230, 216)
-    INK = (58, 50, 44)
-    GOLD = (162, 124, 74)
+    scheme = get_color_scheme(manifest)
+    CREAM = scheme["bg"]
+    INK = scheme["ink"]
+    GOLD = scheme["hilight"]
 
     extra_h = 0
     if bio_items:
