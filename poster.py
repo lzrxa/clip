@@ -796,6 +796,235 @@ def build_poster_recruit(manifest, bg_img, out_path):
     canvas.convert("RGB").save(out_path, quality=92)
 
 
+def build_poster_dual_track(manifest, bg_img, out_path):
+    """双人群专场版：学的是"活动海报常见的分人群招生结构"（不是照抄某一张具体海报，是这类
+    海报共有的功能模块拼出来的）——顶部大图+活动标题+限时banner，中间一段图标式"为什么
+    选择我们"，然后两个人群专场（比如少儿/成人，或者经典团课/私教定制）各自一段"到店即享
+    清单+成交加码送+服务明细编号列表"，最后是二维码预约+活动条款+免责声明收尾。
+    适合暑期班/艺考集训营/旅游套餐这类"面向不同人群、权益条目比较多"的招生推广场景。
+    深蓝色调，跟其它几版风格区分开。
+    """
+    DEEP_BLUE = (18, 58, 110)
+    MID_BLUE = (26, 82, 148)
+    LIGHT_BLUE = (232, 241, 250)
+    GOLD = (230, 178, 60)
+    WHITE = (255, 255, 255)
+    INK = (40, 46, 58)
+
+    benefit_icons = manifest.get("benefit_icons") or []
+    track1_checklist = manifest.get("track1_checklist") or []
+    track1_details = manifest.get("track1_details") or []
+    track2_checklist = manifest.get("track2_checklist") or []
+    track2_details = manifest.get("track2_details") or []
+    terms_items = manifest.get("terms_items") or []
+    has_track2 = bool(manifest.get("track2_label"))
+
+    # 画布高度按内容动态撑高（这一版板块特别多，更需要按实际内容算，不能固定死）
+    hero_h = 780
+    y_est = hero_h + 90  # 顶部图 + 标题区
+    if benefit_icons:
+        y_est += 80 + len(benefit_icons) * 130
+    y_est += 100  # track1标题banner
+    if track1_checklist:
+        y_est += 60 + len(track1_checklist) * 60
+    if manifest.get("track1_bonus"):
+        y_est += 100
+    if track1_details:
+        y_est += 60 + len(track1_details) * 56
+    if has_track2:
+        y_est += 100
+        if track2_checklist:
+            y_est += 60 + len(track2_checklist) * 60
+        if manifest.get("track2_bonus"):
+            y_est += 100
+        if track2_details:
+            y_est += 60 + len(track2_details) * 56
+    if manifest.get("wechat_link") or manifest.get("logo_url"):
+        y_est += 520
+    if terms_items:
+        y_est += 80 + len(terms_items) * 56
+    if manifest.get("disclaimer_text"):
+        y_est += 160
+    y_est += 100
+    canvas_h = min(max(1920, y_est), 4200)  # 板块多，上限比其它版式放宽一些
+
+    canvas = Image.new("RGBA", (W, canvas_h), LIGHT_BLUE)
+    hero = cover_resize(bg_img, W, hero_h).convert("RGBA")
+    canvas.paste(hero, (0, 0))
+    add_vertical_gradient(canvas, (0, 0, W, 160), 210, 40, color=(10, 30, 60))  # 顶部logo区压一层深色底，白字才看得清
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    f_brand = font([NOTO_BOLD], 28)
+    f_title = font([NOTO_BLACK, NOTO_BOLD], 68)
+    f_banner = font([NOTO_BOLD], 32)
+    f_section_title = font([NOTO_BLACK, NOTO_BOLD], 40)
+    f_icon_title = font([NOTO_BOLD], 32)
+    f_icon_desc = font([NOTO_REGULAR], 26)
+    f_track_label = font([NOTO_BLACK, NOTO_BOLD], 34)
+    f_track_subtitle = font([NOTO_REGULAR], 26)
+    f_item = font([NOTO_BOLD], 30)
+    f_bonus = font([NOTO_BOLD], 30)
+    f_detail_num = font([NOTO_BOLD], 24)
+    f_cta_big = font([NOTO_BLACK, NOTO_BOLD], 56)
+    f_terms_title = font([NOTO_BOLD], 30)
+    f_terms_item = font([NOTO_REGULAR], 24)
+    f_disclaimer = font([NOTO_REGULAR], 22)
+    f_footer = font([NOTO_REGULAR], 22)
+
+    # 顶部品牌名（复用teacher_name字段当机构/品牌名，不用额外加新字段）
+    brand_text = safe_text(manifest.get("teacher_name") or "")
+    if brand_text:
+        draw.text((48, 40), brand_text, font=f_brand, fill=WHITE)
+
+    # 大标题 + 限时banner，压在顶图底部
+    title_y = hero_h - 220
+    title = safe_text(manifest.get("title") or "")
+    wrapped = textwrap.fill(title, width=10)
+    for line in wrapped.split("\n"):
+        bbox = draw.textbbox((0, 0), line, font=f_title)
+        tw = bbox[2] - bbox[0]
+        draw.text(((W - tw) / 2, title_y), line, font=f_title, fill=WHITE,
+                   stroke_width=3, stroke_fill=(0, 0, 0, 160))
+        title_y += (bbox[3] - bbox[1]) + 20
+
+    banner_text = safe_text(manifest.get("subtitle_banner") or "")
+    if banner_text:
+        bbox = draw.textbbox((0, 0), banner_text, font=f_banner)
+        tw = bbox[2] - bbox[0]
+        draw_pill(draw, ((W - tw) / 2 - 24, title_y + 16), banner_text, f_banner,
+                  fill=GOLD, text_fill=DEEP_BLUE, padding=(24, 12))
+
+    y = hero_h + 60
+
+    # "为什么选择我们"：图标+标题+一句话说明，横向排一列（不用真的图标图片，用圆底+emoji，
+    # 简单可靠，不依赖额外的图片素材）
+    if benefit_icons:
+        section_title = safe_text(manifest.get("benefit_section_title") or "为什么选择本次活动？")
+        bbox = draw.textbbox((0, 0), section_title, font=f_section_title)
+        draw.text(((W - (bbox[2] - bbox[0])) / 2, y), section_title, font=f_section_title, fill=DEEP_BLUE)
+        y += 90
+        for item in benefit_icons:
+            icon_r = 46
+            draw.ellipse([48, y, 48 + icon_r * 2, y + icon_r * 2], fill=MID_BLUE)
+            icon_char = safe_text(item.get("icon") or "★")
+            f_icon_char = font([NOTO_BOLD], 40)
+            cbbox = draw.textbbox((0, 0), icon_char, font=f_icon_char)
+            draw.text((48 + icon_r - (cbbox[2] - cbbox[0]) / 2 - cbbox[0], y + icon_r - (cbbox[3] - cbbox[1]) / 2 - cbbox[1]),
+                      icon_char, font=f_icon_char, fill=WHITE)
+            text_x = 48 + icon_r * 2 + 28
+            draw.text((text_x, y + 6), safe_text(item.get("title") or ""), font=f_icon_title, fill=DEEP_BLUE)
+            desc_wrapped = textwrap.fill(safe_text(item.get("desc") or ""), width=20)
+            draw.multiline_text((text_x, y + 52), desc_wrapped, font=f_icon_desc, fill=INK, spacing=6)
+            y += 130
+        y += 20
+
+    def draw_track(y, label, subtitle, checklist, bonus, details):
+        """画一个"人群专场"板块：深色标题条 + 浅色内容卡片，两个专场（比如儿童/成人）
+        调用同一个函数画，保证样式一致、不用重复写两遍"""
+        # 专场标题条（深底白字，视觉上跟正文内容区分开）
+        bar_h = 76
+        draw.rectangle([0, y, W, y + bar_h], fill=DEEP_BLUE)
+        draw.text((48, y + 20), safe_text(label), font=f_track_label, fill=GOLD)
+        y += bar_h + 16
+        if subtitle:
+            bbox = draw.textbbox((0, 0), subtitle, font=f_track_subtitle)
+            draw.text(((W - (bbox[2] - bbox[0])) / 2, y), subtitle, font=f_track_subtitle, fill=MID_BLUE)
+            y += 46
+
+        card_x0, card_x1 = 32, W - 32
+        card_y0 = y
+        # 先估算卡片要多高，再画卡片背景，再在上面写字（跟标准版"先量后画"的思路一致）
+        card_h = 40
+        if checklist:
+            card_h += 50 + len(checklist) * 58
+        if bonus:
+            card_h += 90
+        if details:
+            card_h += 50 + len(details) * 52
+        draw.rounded_rectangle([card_x0, card_y0, card_x1, card_y0 + card_h], radius=20, fill=(255, 255, 255, 235))
+        y = card_y0 + 30
+
+        if checklist:
+            draw.text((card_x0 + 24, y), "到店即享（免费权益）", font=f_terms_title, fill=DEEP_BLUE)
+            y += 50
+            for item in checklist:
+                draw_checkmark(draw, card_x0 + 44, y + 18, 16, (60, 150, 90))
+                draw.text((card_x0 + 72, y), safe_text(item), font=f_item, fill=INK)
+                y += 58
+
+        if bonus:
+            y += 10
+            draw.rounded_rectangle([card_x0 + 20, y, card_x1 - 20, y + 70], radius=14, fill=(*GOLD, 60))
+            draw.text((card_x0 + 40, y + 18), "🎁 " + safe_text(bonus), font=f_bonus, fill=(140, 90, 10))
+            y += 90
+
+        if details:
+            for idx, item in enumerate(details, 1):
+                draw_number_circle(draw, card_x0 + 40, y + 16, 16, idx, f_detail_num, MID_BLUE, WHITE)
+                draw.text((card_x0 + 68, y), safe_text(item), font=f_terms_item, fill=INK)
+                y += 52
+
+        return card_y0 + card_h + 36
+
+    track1_label = safe_text(manifest.get("track1_label") or "专场A")
+    y = draw_track(y, track1_label, safe_text(manifest.get("track1_subtitle") or ""),
+                    track1_checklist, manifest.get("track1_bonus"), track1_details)
+
+    if has_track2:
+        track2_label = safe_text(manifest.get("track2_label") or "专场B")
+        y = draw_track(y, track2_label, safe_text(manifest.get("track2_subtitle") or ""),
+                        track2_checklist, manifest.get("track2_bonus"), track2_details)
+
+    # 二维码预约区：深色底突出，跟前面的浅色内容区形成节奏上的变化
+    contact_img = get_contact_image(manifest, 280)
+    if contact_img:
+        cta_h = 520
+        draw.rectangle([0, y, W, y + cta_h], fill=DEEP_BLUE)
+        cta_headline = safe_text(manifest.get("cta_headline") or "扫码一键预约")
+        bbox = draw.textbbox((0, 0), cta_headline, font=f_cta_big)
+        draw.text(((W - (bbox[2] - bbox[0])) / 2, y + 40), cta_headline, font=f_cta_big, fill=GOLD)
+        cta_desc = safe_text(manifest.get("cta_desc") or "")
+        if cta_desc:
+            desc_wrapped = textwrap.fill(cta_desc, width=26)
+            bbox2 = draw.multiline_textbbox((0, 0), desc_wrapped, font=f_icon_desc, spacing=8)
+            draw.multiline_text(((W - (bbox2[2] - bbox2[0])) / 2, y + 130), desc_wrapped,
+                                 font=f_icon_desc, fill=(220, 230, 245), spacing=8, align="center")
+        qr_bg = Image.new("RGBA", (300, 300), WHITE)
+        qr_bg.paste(contact_img, (10, 10))
+        canvas.paste(qr_bg, ((W - 300) // 2, y + 200), qr_bg)
+        y += cta_h + 40
+
+    if terms_items:
+        draw.text((48, y), "活动说明", font=f_terms_title, fill=DEEP_BLUE)
+        y += 50
+        for idx, item in enumerate(terms_items, 1):
+            wrapped_item = textwrap.fill(safe_text(item), width=32)
+            lines = wrapped_item.split("\n")
+            draw_number_circle(draw, 66, y + 16, 14, idx, f_detail_num, MID_BLUE, WHITE)
+            draw.text((92, y), lines[0], font=f_terms_item, fill=INK)
+            y += 40
+            for extra_line in lines[1:]:
+                draw.text((92, y), extra_line, font=f_terms_item, fill=INK)
+                y += 36
+            y += 12
+        y += 20
+
+    disclaimer = safe_text(manifest.get("disclaimer_text") or "")
+    if disclaimer:
+        wrapped_disc = textwrap.fill(disclaimer, width=36)
+        draw.multiline_text((48, y), wrapped_disc, font=f_disclaimer, fill=(100, 108, 120), spacing=6)
+        bbox = draw.multiline_textbbox((0, 0), wrapped_disc, font=f_disclaimer, spacing=6)
+        y += (bbox[3] - bbox[1]) + 30
+
+    footer_text = safe_text(manifest.get("footer_text") or "")
+    if footer_text:
+        bbox = draw.textbbox((0, 0), footer_text, font=f_footer)
+        draw.text(((W - (bbox[2] - bbox[0])) / 2, y), footer_text, font=f_footer, fill=(120, 128, 140))
+        y += 50
+
+    canvas.convert("RGB").save(out_path, quality=92)
+
+
 def build_poster_expert_lecture(manifest, bg_img, out_path):
     """师资培训/机构品宣版：深色背景+金色大标题，左侧文字信息、右侧透出人像，
     底部一张"课程概览"卡片——适合师资培训、专家讲堂、机构品牌宣传这类场景。
@@ -1008,6 +1237,8 @@ def build_poster(manifest, bg_img, out_path):
         build_poster_expert_lecture(manifest, bg_img, out_path)
     elif template == "teacher_profile":
         build_poster_teacher_profile(manifest, bg_img, out_path)
+    elif template == "dual_track":
+        build_poster_dual_track(manifest, bg_img, out_path)
     else:
         build_poster_standard(manifest, bg_img, out_path)
 
