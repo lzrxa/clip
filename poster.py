@@ -618,6 +618,42 @@ def build_poster_promo(manifest, bg_img, out_path):
     canvas.convert("RGB").save(out_path, quality=92)
 
 
+def draw_gift_icon(draw, cx, cy, r, bg_color, icon_color):
+    """礼物盒图标：圆底 + 一个立体感的礼物盒（盒身+丝带十字），比"圆圈里放一个emoji"更像
+    正经的图标设计，字体渲染emoji在不同系统上效果还不稳定，自己画一个更可控"""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=bg_color)
+    box_size = r * 0.95
+    box_top = cy - box_size * 0.35
+    draw.rectangle([cx - box_size / 2, box_top, cx + box_size / 2, cy + box_size / 2], fill=icon_color)
+    lid_h = box_size * 0.22
+    draw.rectangle([cx - box_size / 2 - 4, box_top - lid_h, cx + box_size / 2 + 4, box_top], fill=icon_color)
+    ribbon_w = box_size * 0.16
+    draw.rectangle([cx - ribbon_w / 2, box_top - lid_h, cx + ribbon_w / 2, cy + box_size / 2], fill=bg_color)
+    draw.rectangle([cx - box_size / 2 - 4, box_top - lid_h, cx + box_size / 2 + 4, box_top - lid_h + ribbon_w * 0.6], fill=bg_color)
+
+
+def draw_discount_icon(draw, cx, cy, r, bg_color, icon_color):
+    """折扣标签图标：圆底 + 一个"%"符号造型（两个小圆+一条斜线），不直接写百分号字符
+    （字体粗细跟其它图标不搭），自己拿几何图形拼一个更协调"""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=bg_color)
+    draw.line([(cx - r * 0.42, cy + r * 0.42), (cx + r * 0.42, cy - r * 0.42)], fill=icon_color, width=6)
+    dot_r = r * 0.16
+    draw.ellipse([cx - r * 0.42 - dot_r, cy - r * 0.42 - dot_r, cx - r * 0.42 + dot_r, cy - r * 0.42 + dot_r], fill=icon_color)
+    draw.ellipse([cx + r * 0.42 - dot_r, cy + r * 0.42 - dot_r, cx + r * 0.42 + dot_r, cy + r * 0.42 + dot_r], fill=icon_color)
+
+
+def draw_star_icon(draw, cx, cy, r, bg_color, icon_color):
+    """星星/惊喜图标：圆底 + 一个五角星，用于"成交再送"这类惊喜权益"""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=bg_color)
+    import math
+    points = []
+    for i in range(10):
+        angle = math.pi / 2 + i * math.pi / 5
+        radius = r * 0.62 if i % 2 == 0 else r * 0.62 * 0.42
+        points.append((cx + radius * math.cos(angle), cy - radius * math.sin(angle)))
+    draw.polygon(points, fill=icon_color)
+
+
 def draw_checkmark(draw, cx, cy, r, color):
     """画一个"打钩"图标：外面一个描边圆圈，里面画勾——不用现成的✓字符（那类符号在
     Noto Sans CJK这套字体里大概率没有对应字形，用了又会变回那种"缺字方块"），
@@ -828,7 +864,7 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     if track1_checklist:
         y_est += 60 + len(track1_checklist) * 60
     if manifest.get("track1_bonus"):
-        y_est += 100
+        y_est += 140
     if track1_details:
         y_est += 60 + len(track1_details) * 56
     if has_track2:
@@ -836,13 +872,13 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         if track2_checklist:
             y_est += 60 + len(track2_checklist) * 60
         if manifest.get("track2_bonus"):
-            y_est += 100
+            y_est += 140
         if track2_details:
             y_est += 60 + len(track2_details) * 56
     has_qr_setup = bool(manifest.get("wechat_link") or manifest.get("logo_url"))
     has_cta_text = bool(manifest.get("cta_headline") or manifest.get("cta_desc"))
     if has_qr_setup:
-        y_est += 520
+        y_est += 570
     elif has_cta_text:
         y_est += 280
     if terms_items:
@@ -856,6 +892,10 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     hero = cover_resize(bg_img, W, hero_h).convert("RGBA")
     canvas.paste(hero, (0, 0))
     add_vertical_gradient(canvas, (0, 0, W, 160), 210, 40, color=(10, 30, 60))  # 顶部logo区压一层深色底，白字才看得清
+    # 标题区也单独压一层从透明到深色的渐变——之前标题只靠"白字+黑色描边"保证能看清，
+    # 遇到偏浅色的背景图（比如雪地、天空）反差会不够，观感不如参考图里"标题有底色衬托"
+    # 那么干净利落。这里在标题区域叠一层底部更深的渐变，不挑背景图深浅都能看清楚
+    add_vertical_gradient(canvas, (0, hero_h - 340, W, hero_h), 0, 195, color=(8, 25, 50))
     draw = ImageDraw.Draw(canvas, "RGBA")
 
     f_brand = font([NOTO_BOLD], 28)
@@ -907,14 +947,21 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         bbox = draw.textbbox((0, 0), section_title, font=f_section_title)
         draw.text(((W - (bbox[2] - bbox[0])) / 2, y), section_title, font=f_section_title, fill=DEEP_BLUE)
         y += 90
-        for item in benefit_icons:
+        for idx_icon, item in enumerate(benefit_icons):
             icon_r = 46
-            draw.ellipse([48, y, 48 + icon_r * 2, y + icon_r * 2], fill=MID_BLUE)
-            icon_char = safe_text(item.get("icon") or "★")
-            f_icon_char = font([NOTO_BOLD], 40)
-            cbbox = draw.textbbox((0, 0), icon_char, font=f_icon_char)
-            draw.text((48 + icon_r - (cbbox[2] - cbbox[0]) / 2 - cbbox[0], y + icon_r - (cbbox[3] - cbbox[1]) / 2 - cbbox[1]),
-                      icon_char, font=f_icon_char, fill=WHITE)
+            icon_raw = safe_text(item.get("icon") or "")
+            cx, cy = 48 + icon_r, y + icon_r
+            # 之前这里是"圆底+写一个字符/emoji"，很多系统的emoji渲染效果不稳定（容易变成
+            # 缺字方块），现在换成实打实用几何图形画的图标——礼物盒/折扣标签/星星这三种，
+            # 覆盖"到店即送/渠道特惠/成交再送"这类常见的三段式权益介绍。识别规则：图标
+            # 文字里带"礼"或者是🎁就画礼物盒，带"%"或"折"就画折扣标签，其它情况（包括
+            # 原来常见的🎉）画星星，星星也兜底适用于任何认不出来的图标文字
+            if "礼" in icon_raw or "🎁" in icon_raw:
+                draw_gift_icon(draw, cx, cy, icon_r * 0.62, MID_BLUE, WHITE)
+            elif "%" in icon_raw or "折" in icon_raw:
+                draw_discount_icon(draw, cx, cy, icon_r * 0.85, MID_BLUE, WHITE)
+            else:
+                draw_star_icon(draw, cx, cy, icon_r, MID_BLUE, WHITE)
             text_x = 48 + icon_r * 2 + 28
             draw.text((text_x, y + 6), safe_text(item.get("title") or ""), font=f_icon_title, fill=DEEP_BLUE)
             desc_wrapped = textwrap.fill(safe_text(item.get("desc") or ""), width=20)
@@ -942,7 +989,7 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         if checklist:
             card_h += 50 + len(checklist) * 58
         if bonus:
-            card_h += 90
+            card_h += 130  # 比之前多留出"成交加码送"这个小标题的位置
         if details:
             card_h += 50 + len(details) * 52
         draw.rounded_rectangle([card_x0, card_y0, card_x1, card_y0 + card_h], radius=20, fill=(255, 255, 255, 235))
@@ -957,9 +1004,23 @@ def build_poster_dual_track(manifest, bg_img, out_path):
                 y += 58
 
         if bonus:
+            # "成交加码送"这个小标题单独用一个白底描边的小胶囊装起来，跟参考图里的处理
+            # 一致——不是直接把标题文字混在金色框里，单独摘出来更醒目，也更有层次感
             y += 10
+            label_text = "成交加码送"
+            bbox = draw.textbbox((0, 0), label_text, font=f_terms_title)
+            label_w = bbox[2] - bbox[0]
+            draw_pill(draw, ((W - label_w) / 2 - 20, y), label_text, f_terms_title,
+                      fill=(255, 255, 255, 255), text_fill=DEEP_BLUE, padding=(20, 8))
+            draw.rounded_rectangle([card_x0 + 20 - 2, y - 2, card_x1 - 20 + 2, y + 46 + 2], radius=20, outline=DEEP_BLUE, width=2)
+            y += 60
             draw.rounded_rectangle([card_x0 + 20, y, card_x1 - 20, y + 70], radius=14, fill=(*GOLD, 60))
-            draw.text((card_x0 + 40, y + 18), "🎁 " + safe_text(bonus), font=f_bonus, fill=(140, 90, 10))
+            gift_r = 20
+            # 这里故意不用透明背景叠加图标（PIL的ImageDraw对这种半透明合成的支持不稳定，
+            # 容易出现颜色不对的情况），改成用一个跟金色底色接近的浅金色实色背景，
+            # 视觉上融合度已经足够好，不用去赌透明合成的效果
+            draw_gift_icon(draw, card_x0 + 40 + gift_r, y + 35, gift_r, (250, 235, 205), (140, 90, 10))
+            draw.text((card_x0 + 40 + gift_r * 2 + 14, y + 18), safe_text(bonus), font=f_bonus, fill=(140, 90, 10))
             y += 90
 
         if details:
@@ -989,7 +1050,7 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     cta_headline_raw = safe_text(manifest.get("cta_headline") or "")
     cta_desc_raw = safe_text(manifest.get("cta_desc") or "")
     if contact_img or cta_headline_raw or cta_desc_raw:
-        cta_h = 520 if contact_img else 280
+        cta_h = 570 if contact_img else 280
         draw.rectangle([0, y, W, y + cta_h], fill=DEEP_BLUE)
         cta_headline = cta_headline_raw or "扫码一键预约"
         bbox = draw.textbbox((0, 0), cta_headline, font=f_cta_big)
@@ -1003,6 +1064,9 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             qr_bg = Image.new("RGBA", (300, 300), WHITE)
             qr_bg.paste(contact_img, (10, 10))
             canvas.paste(qr_bg, ((W - 300) // 2, y + 200), qr_bg)
+            qr_caption = "扫一扫开始预约"
+            bbox3 = draw.textbbox((0, 0), qr_caption, font=f_icon_desc)
+            draw.text(((W - (bbox3[2] - bbox3[0])) / 2, y + 510), qr_caption, font=f_icon_desc, fill=(220, 230, 245))
         y += cta_h + 40
 
     if terms_items:
