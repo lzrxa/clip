@@ -150,22 +150,12 @@ def get_background(manifest):
     if manifest["background_source"] == "ai":
         if not SILICONFLOW_API_KEY:
             raise RuntimeError("选择了AI背景但未配置 SILICONFLOW_API_KEY")
-        # 之前这里默认提示词写死是"山脉草原剪影"，不管什么领域的海报都会往这个方向生成，
-        # 音乐培训这类海报用AI背景兜底时画面会很不搭。这里按manifest传过来的domain换一版默认词，
-        # 用户自己填了ai_bg_prompt的话还是优先用用户填的
-        if manifest.get("domain") == "music":
-            default_prompt = (
-                f"abstract elegant background for a music school poster, {manifest.get('title', '')}, "
-                "soft warm gradient, subtle music notes and instrument silhouettes, minimal illustration, "
-                "no text, no letters, no words, no people, vertical composition"
-            )
-        else:
-            default_prompt = (
-                f"abstract travel poster background, {manifest.get('title', '')}, "
-                "soft gradient, mountains and grassland silhouette, minimal illustration, "
-                "no text, no letters, no words, vertical composition"
-            )
-        prompt = manifest.get("ai_bg_prompt") or default_prompt
+        # 默认提示词现在由Worker那边按领域算好、通过manifest传过来（那边有完整的领域配置，
+        # 不用在这里重复维护一份"是不是music"的判断），这里直接用manifest给的就行
+        prompt = manifest.get("ai_bg_prompt") or (
+            f"abstract elegant poster background, {manifest.get('title', '')}, "
+            "soft gradient, minimal illustration style, no text, no letters, no words, vertical composition"
+        )
         resp = requests.post(
             "https://api.siliconflow.cn/v1/images/generations",
             headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"},
