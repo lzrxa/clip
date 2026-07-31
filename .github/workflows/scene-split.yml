@@ -26,10 +26,6 @@ jobs:
   scene-split:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # GitHub Models（免费AI推理接口）要求workflow明确声明这个权限才能调用，不然自动生成的
-    # GITHUB_TOKEN默认是没有这个权限的，调用会被拒绝——这是GitHub官方文档写明的必需步骤
-    permissions:
-      models: read
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +53,7 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
         run: python scene_split.py
 
       - name: 失败时也要通知Cloudflare（避免任务卡在"处理中"）
