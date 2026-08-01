@@ -646,28 +646,51 @@ def main():
     bottom_caption_color_scheme = manifest.get("bottom_caption_color_scheme") or "gold"
     bottom_caption_duration = manifest.get("bottom_caption_duration")
     bottom_caption_duration = resolve_caption_duration(bottom_caption_duration, 6)
+    # "纯风光+音乐"模式：选题/AI写解说词/素材匹配这些前置步骤完全不变，只是渲染这一步
+    # 不走TTS配音，把逐镜头解说词原文直接当字幕文字显示在画面上，最终成片只有背景音乐、
+    # 没有人声
+    no_voice_mode = bool(manifest.get("no_voice_mode"))
+    no_voice_max_lines = manifest.get("no_voice_max_lines")
+    try:
+        no_voice_max_lines = int(no_voice_max_lines) if no_voice_max_lines else 8
+    except (TypeError, ValueError):
+        no_voice_max_lines = 8
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
-    # 2. edge-tts 生成配音 + 真实语音时间轴字幕（免费），语音优先用任务里选的那个
-    audio_path = f"{WORKDIR}/audio.mp3"
-    srt_path = f"{WORKDIR}/audio.srt"
-    run([
-        "edge-tts", "--voice", task_voice,
-        "--text", full_text,
-        "--write-media", audio_path,
-        "--write-subtitles", srt_path,
-    ])
+    # 2. edge-tts 生成配音 + 真实语音时间轴字幕（免费），语音优先用任务里选的那个——
+    # "纯风光+音乐"模式完全跳过这一步：没有配音就没有真实的语音时长可以对齐，画面时长
+    # 直接用每个镜头自己的duration_sec（scale固定为1.0，不做任何缩放）
+    if no_voice_mode:
+        audio_path = None
+        srt_path = None
+        audio_duration = None
+        scale = 1.0
+        print("纯风光+音乐模式：跳过配音生成，画面时长按镜头原本的duration_sec走")
+    else:
+        audio_path = f"{WORKDIR}/audio.mp3"
+        srt_path = f"{WORKDIR}/audio.srt"
+        run([
+            "edge-tts", "--voice", task_voice,
+            "--text", full_text,
+            "--write-media", audio_path,
+            "--write-subtitles", srt_path,
+        ])
 
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
-        capture_output=True, text=True, check=True,
-    )
-    audio_duration = float(probe.stdout.strip())
-    planned_total = sum(float(s["duration_sec"]) for s in shots)
-    scale = audio_duration / planned_total if planned_total > 0 else 1.0
-    print(f"配音时长 {audio_duration:.2f}s，分镜计划总时长 {planned_total:.2f}s，缩放系数 {scale:.3f}")
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, text=True, check=True,
+        )
+        audio_duration = float(probe.stdout.strip())
+        planned_total = sum(float(s["duration_sec"]) for s in shots)
+        scale = audio_duration / planned_total if planned_total > 0 else 1.0
+        print(f"配音时长 {audio_duration:.2f}s，分镜计划总时长 {planned_total:.2f}s，缩放系数 {scale:.3f}")
+
+    # BGM要裁剪/循环到多长，正常模式下跟着真实配音时长走；纯风光模式没有配音，
+    # 用按镜头时长加总出来的total_video_duration代替，两种模式下面步骤6都统一用这一个变量，
+    # 不用再各自判断走哪条路
+    mix_target_duration = audio_duration if audio_duration is not None else total_video_duration
 
     # 3. 逐镜头生成竖屏分段（图片自动加 Ken Burns 缓慢缩放）
     clip_paths = []
@@ -688,76 +711,107 @@ def main():
 
     # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
-    ass_path = f"{WORKDIR}/audio.ass"
-    try:
-        with open(srt_path, "r", encoding="utf-8") as f:
-            srt_content = f.read()
-        cue_count = build_subtitle_ass(
-            srt_content, ass_path, font_size=subtitle_size, position=subtitle_position,
-            color_key=subtitle_color, bold=subtitle_bold,
-            highlight_numbers=subtitle_highlight_numbers, bg_box=subtitle_bg_box,
-            font_style=subtitle_font_style, box_scheme=subtitle_box_scheme,
-        )
-        print(f"字幕生成完成，共 {cue_count} 条")
-        # fontsdir指向下载好的站酷快乐体所在目录，libass渲染的时候如果ASS样式里指定的字体名
-        # 是"ZCOOL KuaiLe"，会优先来这个目录找，找不到才退回系统字体库；选的是标准黑体的话
-        # 这个参数不会有任何影响（系统本来就装了Noto Sans CJK），加上也没有副作用
-        subtitle_filter = f"subtitles={ass_path}:fontsdir={FONTS_DIR}"
-    except Exception as e:
-        # 生成失败就退回最基础的样式，不能因为字幕这一步把整条视频搞挂
-        print("字幕生成失败，退回基础字幕样式：", e)
-        # "middle"这里也用跟主路径一样的"从底部往上锚定"方式，理由跟build_subtitle_ass里注释的一样：
-        # 真正的正中心对齐在换行行数不一致时会显得位置来回跳。这个兜底路径没法像主路径那样逐条
-        # 微调，只能给一个折中的固定锚点，但至少比之前的"5"（正中心）稳定
-        _pos_map = {"top": (8, 90), "middle": (2, 850), "lower": (2, 420), "bottom": (2, 110)}
-        _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
-        _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
-        _color_tag = rgb_to_ass_bgr(_color_rgb)
-        _font_name = resolve_subtitle_font(subtitle_font_style, subtitle_bold)
-        _border_style = 3 if subtitle_bg_box else 1
-        _outline_val = 8 if subtitle_bg_box else 4
-        _box_info = SUBTITLE_BOX_SCHEMES.get(subtitle_box_scheme, SUBTITLE_BOX_SCHEMES["black"])
-        _back_colour = _box_info["back"] if subtitle_bg_box else "&H000000&"
-        if subtitle_bg_box and _box_info["text_override"]:
-            _color_tag = rgb_to_ass_bgr(_box_info["text_override"])
-        style = (f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},"
-                 f"OutlineColour=&H000000&,BackColour={_back_colour},BorderStyle={_border_style},"
-                 f"Outline={_outline_val},Alignment={_align},MarginV={_mv}")
-        subtitle_filter = f"subtitles={srt_path}:force_style='{style}':fontsdir={FONTS_DIR}"
+    if no_voice_mode:
+        # "纯风光+音乐"模式：没有真实配音、没有语音时间轴，没法走逐句同步字幕这条路。
+        # 直接把每个镜头的解说词原文，当成一块从头到尾持续展示的多行字幕——复用底部字幕
+        # （build_bottom_caption_ass）这条已经验证过的多行渲染逻辑，不用另外写一套渲染代码。
+        # 显示时长用total_video_duration（整条视频的时长），相当于自带"persist"效果；
+        # 最多显示几行由no_voice_max_lines控制，超出的部分会被这个函数自动截断，
+        # 不会为了塞下更多文字硬挤成一大坨、占用太多画面空间
+        subtitle_filter = None
+        narration_lines = [s.get("narration") for s in shots if s.get("narration")]
+        if narration_lines:
+            no_voice_caption_path = f"{WORKDIR}/no_voice_caption.ass"
+            try:
+                if build_bottom_caption_ass(
+                    narration_lines, no_voice_caption_path, duration_sec=total_video_duration,
+                    font_size=subtitle_size, style=bottom_caption_style,
+                    color_scheme=bottom_caption_color_scheme, max_lines=no_voice_max_lines,
+                ):
+                    subtitle_filter = f"subtitles={no_voice_caption_path}:fontsdir={FONTS_DIR}"
+                    print(f"纯风光+音乐模式字幕生成完成，共 {len(narration_lines)} 条解说词、最多显示{no_voice_max_lines}行")
+            except Exception as e:
+                # 字幕这层出问题，不能让整条视频直接渲染失败——退回"只有画面+背景音乐、没有字幕"
+                # 这个更保守但至少能正常出片的结果
+                print("纯风光+音乐模式字幕生成失败，退回无字幕（不影响视频合成）：", e)
 
-    # 开头顶部大字标题字幕（悬念式大标题样式），是独立于上面逐句解说字幕的第二层，
-    # 生成成功就在ffmpeg的滤镜链里跟主字幕串联叠加；不开启/没有内容/生成失败都不影响
-    # 主字幕正常工作，这层从设计上就是"锦上添花，出问题就跳过"，不会拖累主流程
-    if enable_title_caption and title_caption_lines:
-        title_caption_path = f"{WORKDIR}/title_caption.ass"
+        if subtitle_filter:
+            run(["ffmpeg", "-y", "-i", concat_path, "-vf", subtitle_filter,
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path])
+        else:
+            run(["ffmpeg", "-y", "-i", concat_path, "-c", "copy", subtitled_path])
+    else:
+        ass_path = f"{WORKDIR}/audio.ass"
         try:
-            if build_title_caption_ass(title_caption_lines, title_caption_path, duration_sec=title_caption_duration,
-                                        font_size=title_caption_font_size, color_scheme=title_caption_color_scheme,
-                                        font_style=title_caption_font_style):
-                subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}:fontsdir={FONTS_DIR}"
-                print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
+            with open(srt_path, "r", encoding="utf-8") as f:
+                srt_content = f.read()
+            cue_count = build_subtitle_ass(
+                srt_content, ass_path, font_size=subtitle_size, position=subtitle_position,
+                color_key=subtitle_color, bold=subtitle_bold,
+                highlight_numbers=subtitle_highlight_numbers, bg_box=subtitle_bg_box,
+                font_style=subtitle_font_style, box_scheme=subtitle_box_scheme,
+            )
+            print(f"字幕生成完成，共 {cue_count} 条")
+            # fontsdir指向下载好的站酷快乐体所在目录，libass渲染的时候如果ASS样式里指定的字体名
+            # 是"ZCOOL KuaiLe"，会优先来这个目录找，找不到才退回系统字体库；选的是标准黑体的话
+            # 这个参数不会有任何影响（系统本来就装了Noto Sans CJK），加上也没有副作用
+            subtitle_filter = f"subtitles={ass_path}:fontsdir={FONTS_DIR}"
         except Exception as e:
-            print("开头标题字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
+            # 生成失败就退回最基础的样式，不能因为字幕这一步把整条视频搞挂
+            print("字幕生成失败，退回基础字幕样式：", e)
+            # "middle"这里也用跟主路径一样的"从底部往上锚定"方式，理由跟build_subtitle_ass里注释的一样：
+            # 真正的正中心对齐在换行行数不一致时会显得位置来回跳。这个兜底路径没法像主路径那样逐条
+            # 微调，只能给一个折中的固定锚点，但至少比之前的"5"（正中心）稳定
+            _pos_map = {"top": (8, 90), "middle": (2, 850), "lower": (2, 420), "bottom": (2, 110)}
+            _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
+            _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
+            _color_tag = rgb_to_ass_bgr(_color_rgb)
+            _font_name = resolve_subtitle_font(subtitle_font_style, subtitle_bold)
+            _border_style = 3 if subtitle_bg_box else 1
+            _outline_val = 8 if subtitle_bg_box else 4
+            _box_info = SUBTITLE_BOX_SCHEMES.get(subtitle_box_scheme, SUBTITLE_BOX_SCHEMES["black"])
+            _back_colour = _box_info["back"] if subtitle_bg_box else "&H000000&"
+            if subtitle_bg_box and _box_info["text_override"]:
+                _color_tag = rgb_to_ass_bgr(_box_info["text_override"])
+            style = (f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},"
+                     f"OutlineColour=&H000000&,BackColour={_back_colour},BorderStyle={_border_style},"
+                     f"Outline={_outline_val},Alignment={_align},MarginV={_mv}")
+            subtitle_filter = f"subtitles={srt_path}:force_style='{style}':fontsdir={FONTS_DIR}"
 
-    # 底部字幕，同样是独立的第三层，跟标题字幕是同一套"锦上添花、出问题就跳过"的处理方式
-    if enable_bottom_caption and bottom_caption_lines:
-        bottom_caption_path = f"{WORKDIR}/bottom_caption.ass"
-        try:
-            if build_bottom_caption_ass(bottom_caption_lines, bottom_caption_path, duration_sec=bottom_caption_duration,
-                                         font_size=subtitle_size, style=bottom_caption_style, color_scheme=bottom_caption_color_scheme):
-                subtitle_filter = f"{subtitle_filter},subtitles={bottom_caption_path}:fontsdir={FONTS_DIR}"
-                print(f"底部字幕生成完成，共 {len(bottom_caption_lines)} 行")
-        except Exception as e:
-            print("底部字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
+        # 开头顶部大字标题字幕（悬念式大标题样式），是独立于上面逐句解说字幕的第二层，
+        # 生成成功就在ffmpeg的滤镜链里跟主字幕串联叠加；不开启/没有内容/生成失败都不影响
+        # 主字幕正常工作，这层从设计上就是"锦上添花，出问题就跳过"，不会拖累主流程
+        if enable_title_caption and title_caption_lines:
+            title_caption_path = f"{WORKDIR}/title_caption.ass"
+            try:
+                if build_title_caption_ass(title_caption_lines, title_caption_path, duration_sec=title_caption_duration,
+                                            font_size=title_caption_font_size, color_scheme=title_caption_color_scheme,
+                                            font_style=title_caption_font_style):
+                    subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}:fontsdir={FONTS_DIR}"
+                    print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
+            except Exception as e:
+                print("开头标题字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
 
-    run([
-        "ffmpeg", "-y", "-i", concat_path,
-        "-vf", subtitle_filter,
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path,
-    ])
+        # 底部字幕，同样是独立的第三层，跟标题字幕是同一套"锦上添花、出问题就跳过"的处理方式
+        if enable_bottom_caption and bottom_caption_lines:
+            bottom_caption_path = f"{WORKDIR}/bottom_caption.ass"
+            try:
+                if build_bottom_caption_ass(bottom_caption_lines, bottom_caption_path, duration_sec=bottom_caption_duration,
+                                             font_size=subtitle_size, style=bottom_caption_style, color_scheme=bottom_caption_color_scheme):
+                    subtitle_filter = f"{subtitle_filter},subtitles={bottom_caption_path}:fontsdir={FONTS_DIR}"
+                    print(f"底部字幕生成完成，共 {len(bottom_caption_lines)} 行")
+            except Exception as e:
+                print("底部字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
 
-    # 6. 准备背景音乐：找到就裁剪到配音时长，按设定音量混入（不做淡入淡出/自动闪避，
-    # 保持简单直接的听感，这两个效果之前实际使用体验不好，已经去掉）
+        run([
+            "ffmpeg", "-y", "-i", concat_path,
+            "-vf", subtitle_filter,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path,
+        ])
+
+    # 6. 准备背景音乐：裁剪到跟成片一样长（正常模式跟配音时长走，纯风光模式跟镜头总时长走，
+    # 都已经统一收敛到mix_target_duration这一个变量里了），按设定音量混入（不做淡入淡出/
+    # 自动闪避，保持简单直接的听感，这两个效果之前实际使用体验不好，已经去掉）
     bgm_ready_path = None
     if bgm_url:
         try:
@@ -769,7 +823,7 @@ def main():
             bgm_ready_path = f"{WORKDIR}/bgm.mp3"
             run([
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", bgm_src_path,
-                "-t", str(audio_duration), "-af", f"volume={bgm_volume}",
+                "-t", str(mix_target_duration), "-af", f"volume={bgm_volume}",
                 bgm_ready_path,
             ])
         except Exception as e:
@@ -777,8 +831,21 @@ def main():
             bgm_ready_path = None
 
     # 7. 合入配音（+背景音乐）输出最终视频。人声/BGM各自按设定音量直接混音。
+    # "纯风光+音乐"模式没有配音轨道，只有背景音乐（前面/api/render-manifest那一步已经
+    # 保证了一定会有背景音乐，找不到就直接取消渲染了，不会走到这里才发现没有BGM——
+    # 这里的"没有bgm_ready_path"只处理BGM下载/裁剪这一步本身失败的极端情况，兜底出一个
+    # 没有声音但至少画面完整的视频，不会让整条渲染因为音频这层出问题就彻底失败）
     final_path = f"{WORKDIR}/final.mp4"
-    if bgm_ready_path:
+    if no_voice_mode:
+        if bgm_ready_path:
+            run([
+                "ffmpeg", "-y", "-i", subtitled_path, "-i", bgm_ready_path,
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
+            ])
+        else:
+            run(["ffmpeg", "-y", "-i", subtitled_path, "-c", "copy", final_path])
+    elif bgm_ready_path:
         run([
             "ffmpeg", "-y", "-i", subtitled_path, "-i", audio_path, "-i", bgm_ready_path,
             "-filter_complex",
