@@ -80,6 +80,51 @@ def font(path_candidates, size):
     return ImageFont.load_default()
 
 
+def get_poster_scale_config(manifest):
+    """从manifest里读出"上/中/下"三个区域各自的字号缩放比例和位置偏移量。没传这几个字段的话
+    （老海报、或者用的模板还没支持这个功能）全部退回1.0倍缩放、0像素偏移，效果跟原来完全一样，
+    不会因为加了这个功能就影响任何已有的海报"""
+    def _f(key, default):
+        try:
+            v = float(manifest.get(key))
+            return v if 0.5 <= v <= 2.0 else default
+        except (TypeError, ValueError):
+            return default
+    def _i(key, default):
+        try:
+            v = int(manifest.get(key))
+            return max(-150, min(150, v))
+        except (TypeError, ValueError):
+            return default
+    return {
+        "top_scale": _f("top_font_scale", 1.0),
+        "top_offset": _i("top_position_offset", 0),
+        "mid_scale": _f("middle_font_scale", 1.0),
+        "mid_offset": _i("middle_position_offset", 0),
+        "bottom_scale": _f("bottom_font_scale", 1.0),
+        "bottom_offset": _i("bottom_position_offset", 0),
+    }
+
+
+def fit_font_to_width(path_candidates, base_size, scale, texts, max_width, min_size=14):
+    """按scale把base_size放大或缩小；但如果放大后最长的一行文字会超出max_width这个宽度限制，
+    就自动一点点往下调字号，调到刚好能放进这个宽度为止（不会缩到比min_size还小，保留最基本的
+    可读性）。texts可以是一整段字符串，也可以是一组字符串（比如列表里逐条要画的每一行），
+    会按其中最长的那一行来判断够不够宽——这就是"字体调大以后要适应页面宽度"的具体做法：
+    字号可以往大调，但绝对不会因为调太大把文字挤出画布边缘、显示不全"""
+    if isinstance(texts, str):
+        texts = [texts]
+    size = max(min_size, int(round(base_size * scale)))
+    probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    while size > min_size:
+        f = font(path_candidates, size)
+        widest = max((probe.textbbox((0, 0), safe_text(t), font=f)[2] for t in texts if t), default=0)
+        if widest <= max_width:
+            break
+        size -= 2
+    return font(path_candidates, size)
+
+
 # 之前海报上出现的那些黄色/白色小方块，是因为标题装饰符号（⊙、✦）不在 Noto Sans CJK 这套字体的
 # 字符集里，Pillow画不出对应字形，就画成了"缺字方块"。这里做一道统一的过滤：只保留中文汉字、
 # 常见中英文标点、ASCII字符、中间点这些确认能正常显示的字符，其余一律替换成空格——不管是
@@ -285,6 +330,7 @@ def build_poster_standard(manifest, bg_img, out_path):
     # 这版是照片为主的设计，深色/浅色板块不多，色彩风格只影响这一个金色强调色
     # （价格数字、板块小标题、标签），换个风格能让强调色不再是清一色的金黄
     ACCENT_GOLD = get_color_scheme(manifest)["hilight"]
+    scale_cfg = get_poster_scale_config(manifest)
     highlights = manifest.get("highlights") or []          # 亮点列表，标题文字由 highlights_label 决定
     accommodations = manifest.get("accommodations") or []   # 第二组列表，标题文字由 accommodations_label 决定
     # 这两组列表原本是给旅游海报设计的（"体验亮点"/"尊享下榻"），音乐培训这类其他领域的海报
@@ -342,31 +388,42 @@ def build_poster_standard(manifest, bg_img, out_path):
         add_vertical_gradient(canvas, (0, canvas_h - 620, W, canvas_h), 30, 190)
 
     title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), ARTISTIC_FONT)
-    f_loc = font([NOTO_BOLD], 30)
-    f_badge = font([NOTO_BOLD], 24)
-    f_tag = font([NOTO_BOLD], 26)
-    f_title = font([title_font_path, NOTO_BOLD], 108)
-    f_subtitle = font([NOTO_REGULAR], 28)
-    f_section_head = font([NOTO_BLACK, NOTO_BOLD, NOTO_REGULAR], 40)
-    f_section_item = font([NOTO_REGULAR], 30)
-    f_price_label = font([NOTO_BOLD], 26)
-    f_price = font([NOTO_BOLD], 70)
-    f_price_unit = font([NOTO_BOLD], 26)
-    f_footer = font([NOTO_REGULAR], 24)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
+    loc_texts = [f"· {safe_text(l)}" for l in locations_shown]
+    if locations_more > 0:
+        loc_texts.append(f"· 等共{len(all_locations)}个目的地")
+    f_loc = fit_font_to_width([NOTO_BOLD], 30, ts, loc_texts or [""], int(W * 0.56))
+    f_badge = font([NOTO_BOLD], max(14, round(24 * ts)))
+    f_tag = font([NOTO_BOLD], max(14, round(26 * ms)))
+    title_lines = textwrap.fill(safe_text(manifest.get("title") or ""), width=6).split("\n")
+    f_title = fit_font_to_width([title_font_path, NOTO_BOLD], 108, ms, title_lines, W - 96)
+    f_subtitle = font([NOTO_REGULAR], max(14, round(28 * ms)))
+    f_section_head = font([NOTO_BLACK, NOTO_BOLD, NOTO_REGULAR], max(14, round(40 * bs)))
+    section_texts = [f"{i}. {safe_text(t)}" for i, t in enumerate(highlights_shown, 1)] + \
+                     [f"{i}. {safe_text(t)}" for i, t in enumerate(accommodations_shown, 1)]
+    f_section_item = fit_font_to_width([NOTO_REGULAR], 30, bs, section_texts or [""], W - 96)
+    f_price_label = font([NOTO_BOLD], max(14, round(26 * bs)))
+    f_price = font([NOTO_BOLD], max(14, round(70 * bs)))
+    f_price_unit = font([NOTO_BOLD], max(14, round(26 * bs)))
+    f_footer = font([NOTO_REGULAR], max(14, round(24 * bs)))
+    f_tag_bottom = font([NOTO_BOLD], max(14, round(26 * bs)))
 
     # 左上角：景点清单（超过上限的部分用"等共N个目的地"收尾，不会无限往下排挤占标题的位置）
-    y = 56
+    y = 56 + to
+    line_h = round(46 * ts)
     for loc in locations_shown:
         draw.text((48, y), f"· {safe_text(loc)}", font=f_loc, fill=(255, 255, 255, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
-        y += 46
+        y += line_h
     if locations_more > 0:
         draw.text((48, y), f"· 等共{len(all_locations)}个目的地", font=f_loc, fill=(255, 255, 255, 220),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
-        y += 46
+        y += line_h
 
     # 右上角：两个角标
-    badge_y = 56
+    badge_y = 56 + to
     for raw_text in filter(None, [manifest.get("team_size_text"), manifest.get("badge_text")]):
         text = safe_text(raw_text)
         bbox = draw.textbbox((0, 0), text, font=f_badge)
@@ -378,23 +435,21 @@ def build_poster_standard(manifest, bg_img, out_path):
 
     # 中部：高亮小标签 + 大标题 + 英文副标题
     title_ratio = TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.42)
-    mid_y = int(1920 * title_ratio)
+    mid_y = int(1920 * title_ratio) + mo
     if manifest.get("highlight_word"):
         tag_text = safe_text(manifest["highlight_word"])
         bbox = draw.textbbox((0, 0), tag_text, font=f_tag)
         tw = bbox[2] - bbox[0]
         draw_pill(draw, ((W - tw - 32) // 2, mid_y), tag_text, f_tag,
                   fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
-        mid_y += 70
+        mid_y += round(70 * ms)
 
-    title = safe_text(manifest.get("title") or "")
-    wrapped = textwrap.fill(title, width=6)
-    for line in wrapped.split("\n"):
+    for line in title_lines:
         bbox = draw.textbbox((0, 0), line, font=f_title)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, mid_y), line, font=f_title, fill=(255, 255, 255, 255),
                    stroke_width=4, stroke_fill=(0, 0, 0, 255))
-        mid_y += 130
+        mid_y += round(130 * ms)
 
     if manifest.get("subtitle_en"):
         spaced = " ".join(list(safe_text(manifest["subtitle_en"]).replace(" ", "")))
@@ -404,21 +459,22 @@ def build_poster_standard(manifest, bg_img, out_path):
                    stroke_width=1, stroke_fill=(0, 0, 0, 200))
 
     # 内容区从这里开始往下堆叠：体验亮点 -> 住宿亮点 -> 出发地 -> 价格 -> footer
-    content_y = canvas_h - extra_h - 500
+    content_y = canvas_h - extra_h - 500 + bo
 
     def draw_section_list(heading, items, y_start, more_count=0):
         draw.text((48, y_start), heading, font=f_section_head, fill=(*ACCENT_GOLD, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
-        yy = y_start + 62
+        yy = y_start + round(62 * bs)
+        item_line_h = round(46 * bs)
         for idx, item in enumerate(items, 1):
             draw.text((48, yy), f"{idx}. {safe_text(item)}", font=f_section_item, fill=(255, 255, 255, 240),
                        stroke_width=1, stroke_fill=(0, 0, 0, 200))
-            yy += 46
+            yy += item_line_h
         if more_count > 0:
             draw.text((48, yy), f"···等共{len(items) + more_count}项", font=f_section_item, fill=(255, 255, 255, 200),
                        stroke_width=1, stroke_fill=(0, 0, 0, 200))
-            yy += 40
-        return yy + 20
+            yy += round(40 * bs)
+        return yy + round(20 * bs)
 
     if highlights_shown:
         content_y = draw_section_list(f"【{safe_text(highlights_label)}】", highlights_shown, content_y, highlights_more)
@@ -427,13 +483,13 @@ def build_poster_standard(manifest, bg_img, out_path):
     if departure_info:
         draw.text((48, content_y), safe_text(departure_info), font=f_section_head, fill=(255, 255, 255, 245),
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
-        content_y += 90
+        content_y += round(90 * bs)
 
     # 价格档位（最多3档，等分排列）
     if tiers:
         n = len(tiers)
         col_w = W / n
-        py = content_y if (highlights or accommodations or departure_info) else canvas_h - 500
+        py = content_y if (highlights or accommodations or departure_info) else canvas_h - 500 + bo
         for i, tier in enumerate(tiers):
             cx = col_w * i + col_w / 2
             label = safe_text(tier.get("label", ""))
@@ -448,18 +504,18 @@ def build_poster_standard(manifest, bg_img, out_path):
             unit_w = bbox3[2] - bbox3[0]
             total_w = price_w + 8 + unit_w
             start_x = cx - total_w / 2
-            draw.text((start_x, py + 44), price_text, font=f_price, fill=(*ACCENT_GOLD, 255))
-            draw.text((start_x + price_w + 8, py + 44 + (bbox2[3] - bbox3[3])), unit_text,
+            draw.text((start_x, py + round(44 * bs)), price_text, font=f_price, fill=(*ACCENT_GOLD, 255))
+            draw.text((start_x + price_w + 8, py + round(44 * bs) + (bbox2[3] - bbox3[3])), unit_text,
                        font=f_price_unit, fill=(255, 255, 255, 230))
             if i > 0:
-                draw.line([(col_w * i, py - 10), (col_w * i, py + 120)], fill=(255, 255, 255, 90), width=2)
+                draw.line([(col_w * i, py - 10), (col_w * i, py + round(120 * bs))], fill=(255, 255, 255, 90), width=2)
 
     # 底部：footer标签 + 说明文字
-    footer_y = canvas_h - 320
+    footer_y = canvas_h - 320 + bo
     fx = 48
     if manifest.get("footer_tag"):
         footer_tag_text = safe_text(manifest["footer_tag"])
-        rect = draw_pill(draw, (fx, footer_y), footer_tag_text, f_tag,
+        rect = draw_pill(draw, (fx, footer_y), footer_tag_text, f_tag_bottom,
                           fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
         fx = rect[2] + 16
     if manifest.get("footer_text"):
@@ -475,43 +531,50 @@ def build_poster_standard(manifest, bg_img, out_path):
         canvas.paste(qr_bg, (W - 220, canvas_h - 260), qr_bg)
 
     # 最底部装饰线（虚线+文字，呼应参考海报的点线装饰）
-    dash_y = canvas_h - 100
+    dash_y = canvas_h - 100 + bo
     dash_x = 60
     while dash_x < W - 60:
         draw.line([(dash_x, dash_y), (dash_x + 14, dash_y)], fill=(255, 255, 255, 140), width=2)
         dash_x += 24
     bottom_text = safe_text(manifest.get("bottom_tagline") or "独家定制   100% 原创线路")
-    f_bottom_tag = font([NOTO_BOLD, NOTO_REGULAR], 30)
+    f_bottom_tag = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 30, bs, bottom_text, W - 96)
     bbox = draw.textbbox((0, 0), bottom_text, font=f_bottom_tag)
     tw = bbox[2] - bbox[0]
-    draw.text(((W - tw) / 2, canvas_h - 74), bottom_text, font=f_bottom_tag, fill=(255, 255, 255, 210))
+    draw.text(((W - tw) / 2, canvas_h - 74 + bo), bottom_text, font=f_bottom_tag, fill=(255, 255, 255, 210))
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def build_poster_brand(manifest, bg_img, out_path):
     """纯大字风光版：不放价格，突出情绪和品牌感，适合形象宣传而非促销。"""
     ACCENT_GOLD = get_color_scheme(manifest)["hilight"]
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
     canvas = cover_resize(bg_img, W, H).convert("RGBA")
     add_vertical_gradient(canvas, (0, 0, W, 460), 120, 20)
     add_vertical_gradient(canvas, (0, H - 380, W, H), 10, 170)
     draw = ImageDraw.Draw(canvas, "RGBA")
 
     title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), ARTISTIC_FONT)
-    f_loc = font([NOTO_BOLD], 28)
-    f_tag = font([NOTO_BOLD], 26)
-    f_title = font([title_font_path, NOTO_BOLD], 128)
-    f_subtitle = font([NOTO_REGULAR], 30)
-    f_footer = font([NOTO_REGULAR], 26)
+    loc_texts = [f"· {safe_text(l)}" for l in (manifest.get("locations") or [])[:6]]
+    f_loc = fit_font_to_width([NOTO_BOLD], 28, ts, loc_texts or [""], int(W * 0.9))
+    f_tag = font([NOTO_BOLD], max(14, round(26 * ms)))
+    title_lines = textwrap.fill(safe_text(manifest.get("title") or ""), width=6).split("\n")
+    f_title = fit_font_to_width([title_font_path, NOTO_BOLD], 128, ms, title_lines, W - 96)
+    f_subtitle = font([NOTO_REGULAR], max(14, round(30 * ms)))
+    f_footer = fit_font_to_width([NOTO_REGULAR], 26, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
 
-    y = 56
+    y = 56 + to
+    line_h = round(42 * ts)
     for loc in (manifest.get("locations") or [])[:6]:
         draw.text((48, y), f"· {safe_text(loc)}", font=f_loc, fill=(255, 255, 255, 255),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
-        y += 42
+        y += line_h
 
     title_ratio = TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.46)
-    mid_y = int(H * title_ratio)
+    mid_y = int(H * title_ratio) + mo
     if manifest.get("highlight_word"):
         f_tagfont = f_tag
         tag_text = safe_text(manifest["highlight_word"])
@@ -519,16 +582,14 @@ def build_poster_brand(manifest, bg_img, out_path):
         tw = bbox[2] - bbox[0]
         draw_pill(draw, ((W - tw - 32) // 2, mid_y), tag_text, f_tagfont,
                   fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
-        mid_y += 74
+        mid_y += round(74 * ms)
 
-    title = safe_text(manifest.get("title") or "")
-    wrapped = textwrap.fill(title, width=6)
-    for line in wrapped.split("\n"):
+    for line in title_lines:
         bbox = draw.textbbox((0, 0), line, font=f_title)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, mid_y), line, font=f_title, fill=(255, 255, 255, 255),
                    stroke_width=5, stroke_fill=(0, 0, 0, 255))
-        mid_y += 150
+        mid_y += round(150 * ms)
 
     if manifest.get("subtitle_en"):
         spaced = " ".join(list(safe_text(manifest["subtitle_en"]).replace(" ", "")))
@@ -541,9 +602,9 @@ def build_poster_brand(manifest, bg_img, out_path):
         footer_text = safe_text(manifest["footer_text"])
         bbox = draw.textbbox((0, 0), footer_text, font=f_footer)
         tw = bbox[2] - bbox[0]
-        draw.text(((W - tw) / 2, H - 140), footer_text, font=f_footer, fill=(255, 255, 255, 220))
+        draw.text(((W - tw) / 2, H - 140 + bo), footer_text, font=f_footer, fill=(255, 255, 255, 220))
 
-    draw_phone_number(draw, manifest, f_footer, H - 105)
+    draw_phone_number(draw, manifest, f_footer, H - 105 + bo)
 
     contact_img = get_contact_image(manifest, 150)
     if contact_img:
@@ -551,36 +612,40 @@ def build_poster_brand(manifest, bg_img, out_path):
         qr_bg.paste(contact_img, (8, 8))
         canvas.paste(qr_bg, (W - 210, H - 250), qr_bg)
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def build_poster_promo(manifest, bg_img, out_path):
     """促销价格版：价格是绝对视觉焦点，标题和景点清单缩小让位。"""
     ACCENT_GOLD = get_color_scheme(manifest)["hilight"]
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
     canvas = cover_resize(bg_img, W, H).convert("RGBA")
     add_vertical_gradient(canvas, (0, 0, W, 380), 130, 30)
     add_vertical_gradient(canvas, (0, H - 760, W, H), 20, 210)
     draw = ImageDraw.Draw(canvas, "RGBA")
 
-    f_loc = font([NOTO_BOLD], 26)
-    f_tag = font([NOTO_BOLD], 24)
+    loc_line = "  ·  ".join(safe_text(loc) for loc in (manifest.get("locations") or [])[:5])
+    f_loc = fit_font_to_width([NOTO_BOLD], 26, ts, loc_line or "", int(W * 0.92))
+    f_tag = font([NOTO_BOLD], max(14, round(24 * bs)))
     title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), ARTISTIC_FONT)
-    f_title = font([title_font_path, NOTO_BOLD], 74)
-    f_hero_label = font([NOTO_BOLD], 32)
-    f_hero_price = font([NOTO_BOLD], 168)
-    f_hero_unit = font([NOTO_BOLD], 36)
-    f_price_label = font([NOTO_BOLD], 24)
-    f_price = font([NOTO_BOLD], 50)
-    f_footer = font([NOTO_REGULAR], 24)
+    f_title = fit_font_to_width([title_font_path, NOTO_BOLD], 74, ms, safe_text(manifest.get("title") or ""), W - 96)
+    f_hero_label = font([NOTO_BOLD], max(14, round(32 * bs)))
+    f_hero_price = font([NOTO_BOLD], max(14, round(168 * bs)))
+    f_hero_unit = font([NOTO_BOLD], max(14, round(36 * bs)))
+    f_price_label = font([NOTO_BOLD], max(14, round(24 * bs)))
+    f_price = font([NOTO_BOLD], max(14, round(50 * bs)))
+    f_footer = fit_font_to_width([NOTO_REGULAR], 24, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
 
     # 顶部：一行小景点清单（横排，节省空间给价格）
-    if manifest.get("locations"):
-        line = "  ·  ".join(safe_text(loc) for loc in manifest["locations"][:5])
-        draw.text((48, 56), line, font=f_loc, fill=(255, 255, 255, 240),
+    if loc_line:
+        draw.text((48, 56 + to), loc_line, font=f_loc, fill=(255, 255, 255, 240),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
 
     # 标题（比标准版小，放在价格上方）
-    title_y = 150
+    title_y = 150 + mo
     title = safe_text(manifest.get("title") or "")
     bbox = draw.textbbox((0, 0), title, font=f_title)
     tw = bbox[2] - bbox[0]
@@ -589,13 +654,13 @@ def build_poster_promo(manifest, bg_img, out_path):
 
     # 价格焦点区：第一档价格做成超大"起"价展示，其余档位小字排在下面
     tiers = manifest.get("price_tiers") or []
-    hero_y = H - 700
+    hero_y = H - 700 + bo
     if tiers:
         hero = tiers[0]
         label_text = f"{safe_text(hero.get('label', ''))} 起"
         bbox = draw.textbbox((0, 0), label_text, font=f_hero_label)
         draw.text(((W - (bbox[2] - bbox[0])) / 2, hero_y), label_text, font=f_hero_label, fill=(255, 255, 255, 230))
-        hero_y += 50
+        hero_y += round(50 * bs)
 
         price_text = safe_text(str(hero.get("price", "")))
         bbox2 = draw.textbbox((0, 0), price_text, font=f_hero_price)
@@ -609,7 +674,7 @@ def build_poster_promo(manifest, bg_img, out_path):
                    stroke_width=2, stroke_fill=(0, 0, 0, 180))
         draw.text((start_x + price_w + 12, hero_y + (bbox2[3] - bbox3[3])), unit_text,
                    font=f_hero_unit, fill=(255, 255, 255, 240))
-        hero_y += 210
+        hero_y += round(210 * bs)
 
         others = tiers[1:3]
         if others:
@@ -621,7 +686,7 @@ def build_poster_promo(manifest, bg_img, out_path):
                 bbox = draw.textbbox((0, 0), text, font=f_price_label)
                 draw.text((cx - (bbox[2] - bbox[0]) / 2, hero_y), text, font=f_price_label, fill=(255, 255, 255, 220))
 
-    footer_y = H - 130
+    footer_y = H - 130 + bo
     fx = 48
     if manifest.get("footer_tag"):
         footer_tag_text = safe_text(manifest["footer_tag"])
@@ -639,7 +704,7 @@ def build_poster_promo(manifest, bg_img, out_path):
         qr_bg.paste(contact_img, (8, 8))
         canvas.paste(qr_bg, (W - 200, H - 200), qr_bg)
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def draw_gift_icon(draw, cx, cy, r, bg_color, icon_color):
@@ -854,7 +919,7 @@ def build_poster_recruit(manifest, bg_img, out_path):
         draw.text(((W - tw) / 2, y), bottom_tagline, font=f_bottom, fill=MAROON)
         y += 60
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def build_poster_dual_track(manifest, bg_img, out_path):
@@ -1128,7 +1193,7 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         draw.text(((W - (bbox[2] - bbox[0])) / 2, y), footer_text, font=f_footer, fill=(120, 128, 140))
         y += 50
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def build_poster_expert_lecture(manifest, bg_img, out_path):
@@ -1218,7 +1283,7 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
     for i, loc in enumerate(locations[:2]):
         draw.text((48, footer_y + i * 40), safe_text(loc), font=f_footer_value, fill=(255, 255, 255, 220))
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def build_poster_teacher_profile(manifest, bg_img, out_path):
@@ -1331,7 +1396,7 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
         rows = (len(achievement_items) + 1) // 2
         y += rows * 52 + 20
 
-    canvas.convert("RGB").save(out_path, quality=92)
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
 def build_poster(manifest, bg_img, out_path):
