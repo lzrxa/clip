@@ -341,7 +341,7 @@ BOTTOM_CAPTION_STYLE_PRESETS = {
 }
 
 
-def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", color_scheme="gold", max_lines=2):
+def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", color_scheme="gold", max_lines=2, position="bottom"):
     """底部字幕：跟开头顶部的标题字幕是同一个思路的另一层，位置在画面底部，内容也是AI写脚本
     时额外生成的一组文字（自己独立的内容，跟解说词、标题字幕都不是同一段话）。三种风格靠
     BOTTOM_CAPTION_STYLE_PRESETS分别配置颜色/背景/字体，视觉效果完全不同：
@@ -405,9 +405,13 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
     border_style = 3 if preset["box"] else 1
     outline_val = 10 if preset["box"] else 4
     back_colour = rgb_to_ass_back_colour(bar_rgb) if preset["box"] else "&H000000&"
-    # 底部字幕锚定在画面偏下方（比解说字幕的"下方"选项再靠上一点，避免两层字幕如果同时开启
-    # 会完全重叠在同一行）
-    margin_v = 260
+    # 位置：top是真正的顶部对齐（从上往下长，行数变化不会导致位置跳动，适合"纯风光+音乐"
+    # 模式那种整段话从头显示到尾的用法）；middle不用真正的正中心对齐（Alignment=5）——跟解说
+    # 字幕的"middle"选项踩过的坑一样，行数不一致时正中心对齐看起来会来回跳，这里改用
+    # "从底部往上撑一大截"的方式模拟居中，位置更稳定；bottom是这个函数原来的默认行为，
+    # 不动，保证AI生成的补充底部字幕这条老路径不受影响
+    _pos_map = {"top": (8, 90), "middle": (2, 850), "bottom": (2, 260)}
+    alignment, margin_v = _pos_map.get(position, _pos_map["bottom"])
 
     header = (
         "[Script Info]\n"
@@ -419,7 +423,7 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{font_name},{font_size},{primary_tag},{primary_tag},&H000000&,{back_colour},0,0,0,0,100,100,0,0,"
-        f"{border_style},{outline_val},0,2,60,60,{margin_v},1\n\n"
+        f"{border_style},{outline_val},0,{alignment},60,60,{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -655,6 +659,17 @@ def main():
         no_voice_max_lines = int(no_voice_max_lines) if no_voice_max_lines else 8
     except (TypeError, ValueError):
         no_voice_max_lines = 8
+    # 这几个是"纯风光+音乐"模式字幕专用的样式设置，跟AI补充生成的"底部字幕"（bottom_caption_*）
+    # 是完全独立的一套字段，不共用——避免用户以前给"底部字幕"调好的颜色/样式，在开启这个模式
+    # 之后被不知不觉地拿去用在完全不同的场景上
+    no_voice_position = manifest.get("no_voice_caption_position") or "top"
+    no_voice_style = manifest.get("no_voice_caption_style") or "colorful"
+    no_voice_color_scheme = manifest.get("no_voice_caption_color_scheme") or "gold"
+    no_voice_font_size = manifest.get("no_voice_caption_font_size")
+    try:
+        no_voice_font_size = int(no_voice_font_size) if no_voice_font_size else 52
+    except (TypeError, ValueError):
+        no_voice_font_size = 52
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -725,8 +740,9 @@ def main():
             try:
                 if build_bottom_caption_ass(
                     narration_lines, no_voice_caption_path, duration_sec=total_video_duration,
-                    font_size=subtitle_size, style=bottom_caption_style,
-                    color_scheme=bottom_caption_color_scheme, max_lines=no_voice_max_lines,
+                    font_size=no_voice_font_size, style=no_voice_style,
+                    color_scheme=no_voice_color_scheme, max_lines=no_voice_max_lines,
+                    position=no_voice_position,
                 ):
                     subtitle_filter = f"subtitles={no_voice_caption_path}:fontsdir={FONTS_DIR}"
                     print(f"纯风光+音乐模式字幕生成完成，共 {len(narration_lines)} 条解说词、最多显示{no_voice_max_lines}行")
