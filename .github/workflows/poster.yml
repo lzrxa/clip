@@ -12,6 +12,9 @@ jobs:
   generate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: render-poster-${{ inputs.poster_id }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +31,7 @@ jobs:
       - name: 下载海报标题艺术字体（站酷快乐体，Google Fonts官方OFL开源协议分发，免费商用）
         run: |
           mkdir -p fonts
-          curl -sL -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
+          curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
 
       - name: 生成海报
         env:
@@ -43,8 +46,8 @@ jobs:
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
         run: python poster.py
 
-      - name: 失败时也要通知Cloudflare
-        if: failure()
+      - name: 失败或被取消时也要通知Cloudflare
+        if: failure() || cancelled()
         env:
           POSTER_ID: ${{ inputs.poster_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}

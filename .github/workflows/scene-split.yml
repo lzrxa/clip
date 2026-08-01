@@ -26,6 +26,9 @@ jobs:
   scene-split:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: scene-split-${{ inputs.job_id }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
@@ -56,8 +59,8 @@ jobs:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
         run: python scene_split.py
 
-      - name: 失败时也要通知Cloudflare（避免任务卡在"处理中"）
-        if: failure()
+      - name: 失败或被取消时也要通知Cloudflare（避免任务卡在"处理中"）
+        if: failure() || cancelled()
         env:
           JOB_ID: ${{ inputs.job_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}

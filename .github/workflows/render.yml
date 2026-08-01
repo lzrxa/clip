@@ -12,6 +12,12 @@ jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      # 同一个task_id如果被再次触发（手滑连点两次、或者失败后马上重试），
+      # 直接取消上一个还没跑完的实例，不让两个渲染任务同时跑、抢着上传/回调同一个task_id，
+      # 不同任务之间用的是不同的task_id、各有各的group，互不影响
+      group: render-video-${{ inputs.task_id }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
@@ -29,8 +35,8 @@ jobs:
           免费商用，站酷快乐体跟海报标题用的是同一份字体）
         run: |
           mkdir -p fonts
-          curl -sL -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
-          curl -sL -o fonts/ZCOOLQingKeHuangYou-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
+          curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
+          curl -sL --fail -o fonts/ZCOOLQingKeHuangYou-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
 
       - name: 执行渲染
         env:
@@ -45,8 +51,12 @@ jobs:
           TTS_VOICE: ${{ vars.TTS_VOICE }}
         run: python render.py
 
-      - name: 失败时也要通知Cloudflare（避免任务卡在"合成中"）
-        if: failure()
+      - name: 失败或被取消时也要通知Cloudflare（避免任务卡在"合成中"）
+        # 只写if: failure()漏了一种情况：15分钟超时会让这次运行的结论是"cancelled"，
+        # 不是"failure"，if: failure()压根不会触发，导致任务卡在"合成中"，只能等前端下次
+        # 轮询触发selfHealFromR2兜底检查才可能被纠正过来。这里把cancelled()也加上，
+        # 超时/被新一次触发取消掉，都能第一时间把状态改回failed，不用干等
+        if: failure() || cancelled()
         env:
           TASK_ID: ${{ inputs.task_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
