@@ -578,7 +578,17 @@ def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
 
     fps = 30
     if asset_type == "video":
-        vf = f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        # 找到了"选了横屏、素材还是竖屏"这个问题的真正原因：这里之前用的是"整体缩小+补黑边"
+        # （force_original_aspect_ratio=decrease + pad），这种方式会完整保留素材原始画面、
+        # 不裁掉任何内容，但代价是如果素材本身的宽高比例跟选的输出比例差得比较多（比如
+        # 竖拍的视频放进横屏画布），画面中间只会有一小块，周围一圈都是黑边——这套系统
+        # 从一开始就只支持9:16，用户素材库里积累的视频大概率本来就是竖拍的，选竖屏（9:16）
+        # 的时候这个问题基本不会被注意到（源素材和目标画布比例本来就接近），但选横屏/方形
+        # 之后，只要素材本身是竖着拍的，就会变成"画面中间一小块、周围一圈黑"，看起来就像
+        # "素材还是竖屏"。改成跟下面图片素材同样的"放大填满+裁掉多余部分"（increase + crop，
+        # 效果类似网页里的object-fit: cover），画面会撑满整个画布，代价是原始画面四周会被
+        # 裁掉一部分——这是短视频平台清一色的标准做法，比"完整保留但周围一圈黑边"更符合预期
+        vf = f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},setsar=1"
         run([
             "ffmpeg", "-y", "-stream_loop", "-1", "-i", src_path,
             "-t", str(duration), "-vf", vf, "-r", str(fps),

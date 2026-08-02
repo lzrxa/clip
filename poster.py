@@ -156,10 +156,12 @@ def redact_urls(text):
     return re.sub(r"https?://\S+", "[链接已隐藏]", str(text))
 
 
-def callback(status, poster_url=None, error=None):
+def callback(status, poster_url=None, poster_url_square=None, error=None):
     payload = {"poster_id": POSTER_ID, "secret": RENDER_SECRET, "status": status}
     if poster_url:
         payload["poster_url"] = poster_url
+    if poster_url_square:
+        payload["poster_url_square"] = poster_url_square
     if error:
         payload["error"] = redact_urls(error)[:2000]
 
@@ -1463,6 +1465,26 @@ def main():
     out_path = f"{WORKDIR}/poster.jpg"
     build_poster(manifest, bg_img, out_path)
 
+    # 顺带裁一张方形版（1080x1080），给发朋友圈/公众号封面这类需要方图的场景用，不用
+    # 另外重新排一遍版——7个版式各自的排版都是手工精调过的绝对像素位置，真要给方形/横版
+    # 这类完全不同的比例重新设计排版，风险和工作量都远大于"裁一张已经画好的海报"。
+    # 大多数版式的"主视觉"（照片/大标题）都在画面顶部，裁顶部这一块方形区域，出来的效果
+    # 基本就是一张干净的方形封面图，不会呈现出明显是"硬裁"的突兀感
+    poster_url_square = None
+    try:
+        full_img = Image.open(out_path)
+        square_size = min(full_img.width, full_img.height)
+        square_crop = full_img.crop((0, 0, full_img.width, square_size))
+        # 如果画布本身没有方形版需要的这么高（比如极短的版式），退回等比缩放整张图来凑，
+        # 而不是裁出一张变形或者留白的图
+        if full_img.height < full_img.width:
+            square_crop = full_img.resize((full_img.width, full_img.width))
+        square_path = f"{WORKDIR}/poster_square.jpg"
+        square_crop.convert("RGB").save(square_path, quality=90, optimize=True)
+    except Exception as e:
+        print("方形版裁剪失败，跳过（不影响正常竖版海报）：", e)
+        square_path = None
+
     s3 = boto3.client(
         "s3",
         endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
@@ -1475,8 +1497,19 @@ def main():
     s3.upload_file(out_path, R2_BUCKET_NAME, key, ExtraArgs={"ContentType": "image/jpeg"})
     poster_url = f"{R2_PUBLIC_BASE_URL}/{key}"
 
-    callback("succeeded", poster_url=poster_url)
-    print("完成，海报地址:", poster_url)
+    poster_url_square = None
+    if square_path:
+        try:
+            square_key = f"posters/{POSTER_ID}_square.jpg"
+            s3.upload_file(square_path, R2_BUCKET_NAME, square_key, ExtraArgs={"ContentType": "image/jpeg"})
+            poster_url_square = f"{R2_PUBLIC_BASE_URL}/{square_key}"
+        except Exception as e:
+            # 方形版上传失败，不能因为这个次要产物就把整个渲染流程标记为失败——正常竖版海报
+            # 已经生成好了，这里出问题只是"少一张方形版"，不是"这次渲染失败了"
+            print("方形版上传失败，跳过（不影响正常竖版海报）：", e)
+
+    callback("succeeded", poster_url=poster_url, poster_url_square=poster_url_square)
+    print("完成，海报地址:", poster_url, "| 方形版:", poster_url_square or "（未生成）")
 
 
 if __name__ == "__main__":
