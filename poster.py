@@ -1432,6 +1432,165 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
+def draw_warning_triangle(draw, cx, cy, size, fill_color, mark_color):
+    """画一个警示三角图标（三角形+感叹号），不依赖emoji字符——emoji在不同系统/字体下渲染
+    效果很不稳定，这套系统里但凡需要图标，一直是手工用几何图形画出来的（参考draw_checkmark/
+    draw_star_icon这些），这里延续同样的做法"""
+    half = size
+    points = [(cx, cy - half), (cx - half * 0.95, cy + half * 0.8), (cx + half * 0.95, cy + half * 0.8)]
+    draw.polygon(points, fill=fill_color)
+    bar_w = max(3, size // 7)
+    draw.rectangle([cx - bar_w / 2, cy - half * 0.32, cx + bar_w / 2, cy + half * 0.18], fill=mark_color)
+    dot_r = bar_w * 0.7
+    draw.ellipse([cx - dot_r, cy + half * 0.35 - dot_r, cx + dot_r, cy + half * 0.35 + dot_r], fill=mark_color)
+
+
+def build_poster_newsflash(manifest, bg_img, out_path):
+    """新闻快讯风：纯文字为主的"快讯/金句卡"样式，不需要背景照片——渐变底色+超大加粗描边字，
+    关键词用配色方案里的高亮色单独标出来，是自媒体/新闻号常见的那种"划重点"视觉。跟前面
+    几个版式的定位不一样：那些是"图文并茂的宣传物料"，这个是"信息本身就是卖点"的场景
+    （政策提醒、行业动态、金句语录这类），标题党式的强对比配色本来就是这类内容的核心诉求。
+
+    复用的字段（不需要新增任何表单字段或数据库列）：
+    - title：主标题（多行大字，逐行在"高亮色/白色"之间交替，制造"划重点"的视觉节奏）
+    - highlight_word：顶部小角标文字（频道名/来源标注，比如"乐音艺术提醒"）
+    - highlights：正文要点（每条一行，前面加警示三角图标，不编号——语录/提醒类内容通常
+      不是"清单感"很强的东西，用图标比数字编号更贴合这类内容的调性）
+    - badge_text：中部的"关键事实"高亮横幅（比如"预录阶段仅限签约一所学校"），有内容才显示
+    - footer_tag / footer_text：底部联系方式引导条，跟其它版式是同一套用法
+    - bottom_tagline：最底部小字标语
+    """
+    scheme = get_color_scheme(manifest)
+    DARK, MID, BG, GOLD, INK = scheme["dark"], scheme["mid"], scheme["bg"], scheme["hilight"], scheme["ink"]
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
+
+    title_text = safe_text(manifest.get("title") or "")
+    title_lines_nf = textwrap.fill(title_text, width=9).split("\n")
+    highlights = [safe_text(h) for h in (manifest.get("highlights") or [])][:6]
+    badge_text = safe_text(manifest.get("badge_text") or "")
+
+    # 画布高度按内容动态撑高——这个版式经常是纯文字堆出来的长内容，固定1920很容易不够用
+    extra_h = 0
+    if highlights:
+        extra_h += 40 + len(highlights) * 100  # 正文行数多、字号又比其它版式大，预留得更宽松
+    if badge_text:
+        extra_h += 160
+    extra_h = int(extra_h * max(ms, bs, 1.0) * 1.1)
+    canvas_h = min(max(1920, 900 + extra_h), 4200)
+
+    canvas = Image.new("RGBA", (W, canvas_h), BG)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    # 整张背景就是一块从深到中间色的竖直渐变，不需要任何照片素材——这也是这个版式区别于
+    # 其它几个"必须配图"版式的地方，选题材料不够、或者就是想发一条纯文字快讯的时候能用
+    for yy in range(canvas_h):
+        t = yy / max(1, canvas_h)
+        r = int(DARK[0] + (MID[0] - DARK[0]) * min(1.0, t * 1.6))
+        g = int(DARK[1] + (MID[1] - DARK[1]) * min(1.0, t * 1.6))
+        b = int(DARK[2] + (MID[2] - DARK[2]) * min(1.0, t * 1.6))
+        draw.line([(0, yy), (W, yy)], fill=(r, g, b, 255))
+
+    f_masthead = font([NOTO_BOLD], max(14, round(26 * ts)))
+    f_title = fit_font_to_width([NOTO_BLACK, NOTO_BOLD], 84, ms, title_lines_nf, W - 96)
+    f_body = fit_font_to_width([NOTO_BOLD], 34, bs, highlights or [""], W - 140)
+    f_badge_head = font([NOTO_BOLD], max(14, round(30 * bs)))
+    f_footer = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 26, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
+    f_bottom = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 26, bs, safe_text(manifest.get("bottom_tagline") or ""), W - 96)
+
+    y = 56 + to
+    masthead = safe_text(manifest.get("highlight_word") or "")
+    if masthead:
+        rect = draw_pill(draw, (48, y), masthead, f_masthead, fill=(*GOLD, 235), text_fill=DARK)
+        y = rect[3] + round(50 * ts)
+    else:
+        y += round(20 * ts)
+    y += mo
+
+    # 大标题：逐行在"高亮色/白色"之间交替，制造"划重点"的节奏感——跟render.py里
+    # 开头标题字幕的多色交替是同一个设计思路，这里在海报里用同样的手法实现
+    for idx, line in enumerate(title_lines_nf):
+        color = (*GOLD, 255) if idx % 2 == 0 else (255, 255, 255, 255)
+        bbox = draw.textbbox((0, 0), line, font=f_title)
+        tw = bbox[2] - bbox[0]
+        draw.text(((W - tw) / 2, y), line, font=f_title, fill=color, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+        y += (bbox[3] - bbox[1]) + round(28 * ms)
+    y += round(30 * ms)
+
+    if badge_text:
+        card_h = round(120 * bs)
+        draw.rounded_rectangle([48, y, W - 48, y + card_h], radius=16, fill=(*GOLD, 245))
+        bbox = draw.multiline_textbbox((0, 0), badge_text, font=f_badge_head)
+        wrapped_badge = textwrap.fill(badge_text, width=14)
+        bbox2 = draw.multiline_textbbox((0, 0), wrapped_badge, font=f_badge_head, spacing=8)
+        tw2, th2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
+        draw.multiline_text(((W - tw2) / 2, y + (card_h - th2) / 2), wrapped_badge, font=f_badge_head,
+                             fill=DARK, spacing=8, align="center")
+        y += card_h + round(40 * bs)
+
+    for item in highlights:
+        icon_r = round(20 * bs)
+        draw_warning_triangle(draw, 68, y + icon_r, icon_r, (*GOLD, 255), DARK)
+        wrapped_item = textwrap.fill(item, width=22)
+        draw.multiline_text((104, y), wrapped_item, font=f_body, fill=(255, 255, 255, 245),
+                             stroke_width=2, stroke_fill=(0, 0, 0, 200), spacing=10)
+        bbox = draw.multiline_textbbox((0, 0), wrapped_item, font=f_body, spacing=10)
+        y += (bbox[3] - bbox[1]) + round(36 * bs)
+    y += round(20 * bs) + bo
+
+    # 底部这一整块（联系方式引导条 + 二维码 + 最底部小标语）统一贴着画布最下方摆放，
+    # 不管上面标题/要点内容占了多少——测试的时候发现，内容比较短的情况下，如果联系方式
+    # 紧跟着正文往下排、二维码却单独贴在画布最底部，中间会空出一大截、两边视觉上脱节。
+    # 改成整个footer作为一个整体贴底摆放；如果正文实在太长、贴底位置已经顶到正文下面去了，
+    # 就退回跟着正文继续往下走，不会真的跟内容重叠
+    footer_tag = safe_text(manifest.get("footer_tag") or "")
+    footer_text = safe_text(manifest.get("footer_text") or "")
+    bottom_tagline = safe_text(manifest.get("bottom_tagline") or "")
+    contact_img = get_contact_image(manifest, 150)
+
+    footer_block_h = 0
+    if contact_img:
+        footer_block_h += 190
+    elif footer_tag or footer_text:
+        footer_block_h += round(70 * bs)
+    if bottom_tagline:
+        footer_block_h += round(60 * bs)
+
+    footer_y = max(y, canvas_h - 40 - footer_block_h)
+
+    if contact_img:
+        qr_size = 166
+        qr_bg = Image.new("RGBA", (qr_size, qr_size), (255, 255, 255, 255))
+        qr_bg.paste(contact_img, (8, 8))
+        canvas.paste(qr_bg, (W - qr_size - 44, footer_y), qr_bg)
+        if footer_tag or footer_text:
+            fx = 48
+            if footer_tag:
+                f_tag_nf = font([NOTO_BOLD], max(14, round(26 * bs)))
+                rect = draw_pill(draw, (fx, footer_y + 40), footer_tag, f_tag_nf, fill=(*GOLD, 255), text_fill=DARK)
+                fx = rect[2] + 16
+            if footer_text:
+                draw.text((fx, footer_y + 48), footer_text, font=f_footer, fill=(255, 255, 255, 235))
+        footer_y += 190
+    elif footer_tag or footer_text:
+        fx = 48
+        if footer_tag:
+            f_tag_nf = font([NOTO_BOLD], max(14, round(26 * bs)))
+            rect = draw_pill(draw, (fx, footer_y), footer_tag, f_tag_nf, fill=(*GOLD, 255), text_fill=DARK)
+            fx = rect[2] + 16
+        if footer_text:
+            draw.text((fx, footer_y + 8), footer_text, font=f_footer, fill=(255, 255, 255, 235))
+        footer_y += round(70 * bs)
+
+    if bottom_tagline:
+        bbox = draw.textbbox((0, 0), bottom_tagline, font=f_bottom)
+        tw = bbox[2] - bbox[0]
+        draw.text(((W - tw) / 2, footer_y + 10), bottom_tagline, font=f_bottom, fill=(255, 255, 255, 210))
+
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
+
+
 def build_poster(manifest, bg_img, out_path):
     """按 manifest['template'] 分发到对应版式，找不到就用标准版兜底。"""
     template = manifest.get("template") or "standard"
@@ -1447,6 +1606,8 @@ def build_poster(manifest, bg_img, out_path):
         build_poster_teacher_profile(manifest, bg_img, out_path)
     elif template == "dual_track":
         build_poster_dual_track(manifest, bg_img, out_path)
+    elif template == "newsflash":
+        build_poster_newsflash(manifest, bg_img, out_path)
     else:
         build_poster_standard(manifest, bg_img, out_path)
 
@@ -1454,10 +1615,10 @@ def build_poster(manifest, bg_img, out_path):
 def main():
     os.makedirs(WORKDIR, exist_ok=True)
     manifest = fetch_manifest()
-    # "教师个人简介版"这个版式不需要一张"背景图"——它的主视觉就是老师照片本身，走的是
-    # 浅色卡纸底色，不是"照片+文字浮在上面"那种结构。这里跳过背景图获取，省一次下载/AI生成，
-    # 用户选这个版式时其实也不需要去选背景素材
-    if manifest.get("template") == "teacher_profile":
+    # "教师个人简介版"、"新闻快讯风"这两个版式都不需要一张"背景图"——前者主视觉是老师照片
+    # 本身，后者是纯渐变底色+文字，走的都不是"照片+文字浮在上面"那种结构。这里跳过背景图
+    # 获取，省一次下载/AI生成，用户选这两个版式时也不需要去选背景素材
+    if manifest.get("template") in ("teacher_profile", "newsflash"):
         bg_img = None
     else:
         bg_img = get_background(manifest)
