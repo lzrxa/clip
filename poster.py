@@ -784,6 +784,10 @@ def build_poster_recruit(manifest, bg_img, out_path):
     MAROON = scheme["dark"]
     GOLD = scheme["hilight"]
     INK = scheme["ink"]
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
 
     # 画布高度按内容动态撑高，跟标准版的思路一样，只是这里是"浅色内容区"为主、照片是
     # 顶部的点缀，跟标准版"照片为主、深色内容区在底部"正好反过来
@@ -798,8 +802,11 @@ def build_poster_recruit(manifest, bg_img, out_path):
     if course_info:
         y_est += 90 + len(course_info) * 74
     y_est += 160  # 底部tagline+留白
+    # 缩放影响每个区块实际占用的高度，这里粗略按各区平均缩放系数再加一截余量，避免
+    # 字号调大之后画布反而撑不够高、内容被挤出底部
+    y_est = int(y_est * max(ts, ms, bs, 1.0) * 1.15)
     # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(max(1920, y_est), 3000)
+    canvas_h = min(max(1920, y_est), 4200)
 
     canvas = Image.new("RGBA", (W, canvas_h), CREAM)
     photo = cover_resize(bg_img, W, photo_h).convert("RGBA")
@@ -807,51 +814,52 @@ def build_poster_recruit(manifest, bg_img, out_path):
     add_vertical_gradient(canvas, (0, photo_h - 220, W, photo_h), 0, 255, color=CREAM)
     draw = ImageDraw.Draw(canvas, "RGBA")
 
-    f_hook = font([NOTO_BOLD], 34)
-    f_title = font([NOTO_BLACK, NOTO_BOLD], 92)
-    f_subtitle_en = font([NOTO_BOLD], 26)
-    f_item = font([NOTO_BOLD], 34)
-    f_price_note = font([NOTO_REGULAR], 28)
-    f_price_small = font([NOTO_BOLD], 34)
-    f_price_big = font([NOTO_BLACK, NOTO_BOLD], 88)
-    f_price_unit = font([NOTO_BOLD], 30)
-    f_teacher_name = font([NOTO_BLACK, NOTO_BOLD], 40)
-    f_teacher_bio = font([NOTO_REGULAR], 26)
-    f_section_title = font([NOTO_BOLD], 32)
-    f_course_item = font([NOTO_BOLD], 30)
-    f_number = font([NOTO_BOLD], 26)
-    f_bottom = font([NOTO_BOLD], 28)
+    title_text = safe_text(manifest.get("title") or "")
+    title_lines_r = textwrap.fill(title_text, width=8).split("\n")
+    f_hook = fit_font_to_width([NOTO_BOLD], 34, ts, safe_text(manifest.get("highlight_word") or ""), W - 140)
+    f_title = fit_font_to_width([NOTO_BLACK, NOTO_BOLD], 92, ts, title_lines_r, W - 96)
+    f_subtitle_en = font([NOTO_BOLD], max(14, round(26 * ts)))
+    f_item = fit_font_to_width([NOTO_BOLD], 34, ms, [safe_text(i) for i in checklist] or [""], W - 140)
+    f_price_note = font([NOTO_REGULAR], max(14, round(28 * ms)))
+    f_price_small = font([NOTO_BOLD], max(14, round(34 * ms)))
+    f_price_big = font([NOTO_BLACK, NOTO_BOLD], max(14, round(88 * ms)))
+    f_price_unit = font([NOTO_BOLD], max(14, round(30 * ms)))
+    f_teacher_name = font([NOTO_BLACK, NOTO_BOLD], max(14, round(40 * bs)))
+    f_teacher_bio = font([NOTO_REGULAR], max(14, round(26 * bs)))
+    f_section_title = font([NOTO_BOLD], max(14, round(32 * bs)))
+    f_course_item = fit_font_to_width([NOTO_BOLD], 30, bs, [safe_text(i) for i in course_info] or [""], W - 150)
+    f_number = font([NOTO_BOLD], max(14, round(26 * bs)))
+    f_bottom = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 28, bs, safe_text(manifest.get("bottom_tagline") or ""), W - 96)
 
-    y = photo_h - 130
+    y = photo_h - 130 + to
 
     # 打钩小标语（比如"这个暑假，一起唱响舞台！"），复用highlight_word这个字段
     hook_text = safe_text(manifest.get("highlight_word") or "")
     if hook_text:
         draw_checkmark(draw, 76, y + 16, 18, GOLD)
         draw.text((110, y), hook_text, font=f_hook, fill=MAROON)
-        y += 60
+        y += round(60 * ts)
 
     # 大标题（多行），标题换行沿用标准版的textwrap.fill方式
-    title = safe_text(manifest.get("title") or "")
-    wrapped = textwrap.fill(title, width=8)
-    for line in wrapped.split("\n"):
+    for line in title_lines_r:
         draw.text((48, y), line, font=f_title, fill=MAROON)
         bbox = draw.textbbox((0, 0), line, font=f_title)
-        y += (bbox[3] - bbox[1]) + 26
+        y += (bbox[3] - bbox[1]) + round(26 * ts)
 
     subtitle_en = safe_text(manifest.get("subtitle_en") or "")
     if subtitle_en:
         spaced = " ".join(list(subtitle_en.replace(" ", "")))
         draw.text((48, y + 6), spaced, font=f_subtitle_en, fill=(*INK, 190))
-        y += 62
-    y += 30
+        y += round(62 * ts)
+    y += round(30 * ts)
+    y += mo
 
     # 打钩清单（"两人即开课·满2人开班"这类招生信息）
     for item in checklist:
         draw_checkmark(draw, 66, y + 22, 20, (60, 150, 90))
         draw.text((104, y), safe_text(item), font=f_item, fill=INK)
-        y += 62
-    y += 20
+        y += round(62 * ms)
+    y += round(20 * ms)
 
     # 价格对比：原价划线 + 优惠说明 + 大字优惠价
     if has_price:
@@ -861,23 +869,25 @@ def build_poster_recruit(manifest, bg_img, out_path):
             bbox = draw.textbbox((0, 0), orig_text, font=f_price_small)
             strike_y = y + (bbox[3] - bbox[1]) // 2
             draw.line([(48, strike_y), (48 + (bbox[2] - bbox[0]), strike_y)], fill=(*INK, 200), width=3)
-            y += 54
+            y += round(54 * ms)
         if price_note:
             draw.text((48, y), price_note, font=f_price_note, fill=(*INK, 220))
-            y += 50
+            y += round(50 * ms)
         price_line = f"{discounted_price}"
         draw.text((48, y), price_line, font=f_price_big, fill=GOLD)
         bbox = draw.textbbox((0, 0), price_line, font=f_price_big)
         unit_x = 48 + (bbox[2] - bbox[0]) + 10
         draw.text((unit_x, y + (bbox[3] - bbox[1]) - 34), "元/人", font=f_price_unit, fill=MAROON)
-        y += (bbox[3] - bbox[1]) + 40
+        y += (bbox[3] - bbox[1]) + round(40 * ms)
+
+    y += bo
 
     # 老师名片：圆形头像 + 姓名 + 简介，装在一张浅色卡片里
     if has_teacher:
-        card_h = 220
+        card_h = round(220 * bs)
         draw.rounded_rectangle([48, y, W - 48, y + card_h], radius=24, fill=(255, 255, 255, 235))
-        avatar_size = 160
-        avatar_x, avatar_y = 72, y + 30
+        avatar_size = round(160 * bs)
+        avatar_x, avatar_y = 72, y + round(30 * bs)
         if teacher_photo_url:
             try:
                 resp = requests.get(teacher_photo_url, timeout=30)
@@ -895,29 +905,29 @@ def build_poster_recruit(manifest, bg_img, out_path):
         else:
             draw.ellipse([avatar_x, avatar_y, avatar_x + avatar_size, avatar_y + avatar_size], fill=(230, 222, 205))
         text_x = avatar_x + avatar_size + 28
-        draw.text((text_x, y + 34), teacher_name, font=f_teacher_name, fill=MAROON)
+        draw.text((text_x, y + round(34 * bs)), teacher_name, font=f_teacher_name, fill=MAROON)
         bio_wrapped = textwrap.fill(teacher_bio, width=17)
-        draw.multiline_text((text_x, y + 90), bio_wrapped, font=f_teacher_bio, fill=INK, spacing=8)
-        y += card_h + 40
+        draw.multiline_text((text_x, y + round(90 * bs)), bio_wrapped, font=f_teacher_bio, fill=INK, spacing=8)
+        y += card_h + round(40 * bs)
 
     # 编号课程信息（"上课地点""开课时间"这类，用画的编号圆圈，不用①②③字符）
     if course_info:
         draw.text((48, y), "课程信息", font=f_section_title, fill=MAROON)
-        y += 50
+        y += round(50 * bs)
         draw.line([(48, y), (W - 48, y)], fill=(*GOLD, 140), width=2)
-        y += 30
+        y += round(30 * bs)
         for idx, item in enumerate(course_info, 1):
             draw_number_circle(draw, 62, y + 20, 20, idx, f_number, GOLD, (255, 255, 255))
             draw.text((100, y), safe_text(item), font=f_course_item, fill=INK)
-            y += 68
-        y += 20
+            y += round(68 * bs)
+        y += round(20 * bs)
 
     bottom_tagline = safe_text(manifest.get("bottom_tagline") or "")
     if bottom_tagline:
         bbox = draw.textbbox((0, 0), bottom_tagline, font=f_bottom)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, y), bottom_tagline, font=f_bottom, fill=MAROON)
-        y += 60
+        y += round(60 * bs)
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
@@ -978,6 +988,11 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     if manifest.get("disclaimer_text"):
         y_est += 160
     y_est += 100
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
+    y_est = int(y_est * max(ts, ms, bs, 1.0) * 1.15)
     canvas_h = min(max(1920, y_est), 4200)  # 板块多，上限比其它版式放宽一些
 
     canvas = Image.new("RGBA", (W, canvas_h), LIGHT_BLUE)
@@ -990,38 +1005,38 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     add_vertical_gradient(canvas, (0, hero_h - 340, W, hero_h), 0, 195, color=(8, 25, 50))
     draw = ImageDraw.Draw(canvas, "RGBA")
 
-    f_brand = font([NOTO_BOLD], 28)
-    f_title = font([NOTO_BLACK, NOTO_BOLD], 68)
-    f_banner = font([NOTO_BOLD], 32)
-    f_section_title = font([NOTO_BLACK, NOTO_BOLD], 40)
-    f_icon_title = font([NOTO_BOLD], 32)
-    f_icon_desc = font([NOTO_REGULAR], 26)
-    f_track_label = font([NOTO_BLACK, NOTO_BOLD], 34)
-    f_track_subtitle = font([NOTO_REGULAR], 26)
-    f_item = font([NOTO_BOLD], 30)
-    f_bonus = font([NOTO_BOLD], 30)
-    f_detail_num = font([NOTO_BOLD], 24)
-    f_cta_big = font([NOTO_BLACK, NOTO_BOLD], 56)
-    f_terms_title = font([NOTO_BOLD], 30)
-    f_terms_item = font([NOTO_REGULAR], 24)
-    f_disclaimer = font([NOTO_REGULAR], 22)
-    f_footer = font([NOTO_REGULAR], 22)
+    title_dt = safe_text(manifest.get("title") or "")
+    title_lines_dt = textwrap.fill(title_dt, width=10).split("\n")
+    f_brand = font([NOTO_BOLD], max(14, round(28 * ts)))
+    f_title = fit_font_to_width([NOTO_BLACK, NOTO_BOLD], 68, ts, title_lines_dt, W - 96)
+    f_banner = font([NOTO_BOLD], max(14, round(32 * ts)))
+    f_section_title = font([NOTO_BLACK, NOTO_BOLD], max(14, round(40 * ms)))
+    f_icon_title = font([NOTO_BOLD], max(14, round(32 * ms)))
+    f_icon_desc = font([NOTO_REGULAR], max(14, round(26 * ms)))
+    f_track_label = font([NOTO_BLACK, NOTO_BOLD], max(14, round(34 * ms)))
+    f_track_subtitle = font([NOTO_REGULAR], max(14, round(26 * ms)))
+    f_item = font([NOTO_BOLD], max(14, round(30 * ms)))
+    f_bonus = font([NOTO_BOLD], max(14, round(30 * ms)))
+    f_detail_num = font([NOTO_BOLD], max(14, round(24 * ms)))
+    f_cta_big = font([NOTO_BLACK, NOTO_BOLD], max(14, round(56 * bs)))
+    f_terms_title = font([NOTO_BOLD], max(14, round(30 * bs)))
+    f_terms_item = font([NOTO_REGULAR], max(14, round(24 * bs)))
+    f_disclaimer = font([NOTO_REGULAR], max(14, round(22 * bs)))
+    f_footer = font([NOTO_REGULAR], max(14, round(22 * bs)))
 
     # 顶部品牌名（复用teacher_name字段当机构/品牌名，不用额外加新字段）
     brand_text = safe_text(manifest.get("teacher_name") or "")
     if brand_text:
-        draw.text((48, 40), brand_text, font=f_brand, fill=WHITE)
+        draw.text((48, 40 + to), brand_text, font=f_brand, fill=WHITE)
 
     # 大标题 + 限时banner，压在顶图底部
-    title_y = hero_h - 220
-    title = safe_text(manifest.get("title") or "")
-    wrapped = textwrap.fill(title, width=10)
-    for line in wrapped.split("\n"):
+    title_y = hero_h - 220 + to
+    for line in title_lines_dt:
         bbox = draw.textbbox((0, 0), line, font=f_title)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, title_y), line, font=f_title, fill=WHITE,
                    stroke_width=3, stroke_fill=(0, 0, 0, 160))
-        title_y += (bbox[3] - bbox[1]) + 20
+        title_y += (bbox[3] - bbox[1]) + round(20 * ts)
 
     banner_text = safe_text(manifest.get("subtitle_banner") or "")
     if banner_text:
@@ -1030,7 +1045,7 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         draw_pill(draw, ((W - tw) / 2 - 24, title_y + 16), banner_text, f_banner,
                   fill=GOLD, text_fill=DEEP_BLUE, padding=(24, 12))
 
-    y = hero_h + 60
+    y = hero_h + 60 + mo
 
     # "为什么选择我们"：图标+标题+一句话说明，横向排一列（不用真的图标图片，用圆底+emoji，
     # 简单可靠，不依赖额外的图片素材）
@@ -1038,9 +1053,9 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         section_title = safe_text(manifest.get("benefit_section_title") or "为什么选择本次活动？")
         bbox = draw.textbbox((0, 0), section_title, font=f_section_title)
         draw.text(((W - (bbox[2] - bbox[0])) / 2, y), section_title, font=f_section_title, fill=DEEP_BLUE)
-        y += 90
+        y += round(90 * ms)
         for idx_icon, item in enumerate(benefit_icons):
-            icon_r = 46
+            icon_r = round(46 * ms)
             icon_raw = safe_text(item.get("icon") or "")
             cx, cy = 48 + icon_r, y + icon_r
             # 之前这里是"圆底+写一个字符/emoji"，很多系统的emoji渲染效果不稳定（容易变成
@@ -1058,21 +1073,21 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             draw.text((text_x, y + 6), safe_text(item.get("title") or ""), font=f_icon_title, fill=DEEP_BLUE)
             desc_wrapped = textwrap.fill(safe_text(item.get("desc") or ""), width=20)
             draw.multiline_text((text_x, y + 52), desc_wrapped, font=f_icon_desc, fill=INK, spacing=6)
-            y += 130
-        y += 20
+            y += round(130 * ms)
+        y += round(20 * ms)
 
     def draw_track(y, label, subtitle, checklist, bonus, details):
         """画一个"人群专场"板块：深色标题条 + 浅色内容卡片，两个专场（比如儿童/成人）
         调用同一个函数画，保证样式一致、不用重复写两遍"""
         # 专场标题条（深底白字，视觉上跟正文内容区分开）
-        bar_h = 76
+        bar_h = round(76 * ms)
         draw.rectangle([0, y, W, y + bar_h], fill=DEEP_BLUE)
-        draw.text((48, y + 20), safe_text(label), font=f_track_label, fill=GOLD)
+        draw.text((48, y + round(20 * ms)), safe_text(label), font=f_track_label, fill=GOLD)
         y += bar_h + 16
         if subtitle:
             bbox = draw.textbbox((0, 0), subtitle, font=f_track_subtitle)
             draw.text(((W - (bbox[2] - bbox[0])) / 2, y), subtitle, font=f_track_subtitle, fill=MID_BLUE)
-            y += 46
+            y += round(46 * ms)
 
         card_x0, card_x1 = 32, W - 32
         card_y0 = y
@@ -1084,16 +1099,17 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             card_h += 130  # 比之前多留出"成交加码送"这个小标题的位置
         if details:
             card_h += 50 + len(details) * 52
+        card_h = round(card_h * ms)
         draw.rounded_rectangle([card_x0, card_y0, card_x1, card_y0 + card_h], radius=20, fill=(255, 255, 255, 235))
-        y = card_y0 + 30
+        y = card_y0 + round(30 * ms)
 
         if checklist:
             draw.text((card_x0 + 24, y), "到店即享（免费权益）", font=f_terms_title, fill=DEEP_BLUE)
-            y += 50
+            y += round(50 * ms)
             for item in checklist:
                 draw_checkmark(draw, card_x0 + 44, y + 18, 16, (60, 150, 90))
                 draw.text((card_x0 + 72, y), safe_text(item), font=f_item, fill=INK)
-                y += 58
+                y += round(58 * ms)
 
         if bonus:
             # "成交加码送"这个小标题单独用一个白底描边的小胶囊装起来，跟参考图里的处理
@@ -1105,7 +1121,7 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             draw_pill(draw, ((W - label_w) / 2 - 20, y), label_text, f_terms_title,
                       fill=(255, 255, 255, 255), text_fill=DEEP_BLUE, padding=(20, 8))
             draw.rounded_rectangle([card_x0 + 20 - 2, y - 2, card_x1 - 20 + 2, y + 46 + 2], radius=20, outline=DEEP_BLUE, width=2)
-            y += 60
+            y += round(60 * ms)
             draw.rounded_rectangle([card_x0 + 20, y, card_x1 - 20, y + 70], radius=14, fill=(*GOLD, 60))
             gift_r = 20
             # 这里故意不用透明背景叠加图标（PIL的ImageDraw对这种半透明合成的支持不稳定，
@@ -1117,13 +1133,13 @@ def build_poster_dual_track(manifest, bg_img, out_path):
             light_tint = tuple(min(255, int(c + (255 - c) * 0.65)) for c in GOLD)
             draw_gift_icon(draw, card_x0 + 40 + gift_r, y + 35, gift_r, light_tint, DEEP_BLUE)
             draw.text((card_x0 + 40 + gift_r * 2 + 14, y + 18), safe_text(bonus), font=f_bonus, fill=DEEP_BLUE)
-            y += 90
+            y += round(90 * ms)
 
         if details:
             for idx, item in enumerate(details, 1):
                 draw_number_circle(draw, card_x0 + 40, y + 16, 16, idx, f_detail_num, MID_BLUE, WHITE)
                 draw.text((card_x0 + 68, y), safe_text(item), font=f_terms_item, fill=INK)
-                y += 52
+                y += round(52 * ms)
 
         return card_y0 + card_h + 36
 
@@ -1135,6 +1151,8 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         track2_label = safe_text(manifest.get("track2_label") or "专场B")
         y = draw_track(y, track2_label, safe_text(manifest.get("track2_subtitle") or ""),
                         track2_checklist, manifest.get("track2_bonus"), track2_details)
+
+    y += bo
 
     # 二维码预约区：深色底突出，跟前面的浅色内容区形成节奏上的变化。
     # 重要修正：这一整块之前是"没配二维码/logo，连带headline和desc这些文字说明也全部不显示"——
@@ -1167,31 +1185,31 @@ def build_poster_dual_track(manifest, bg_img, out_path):
 
     if terms_items:
         draw.text((48, y), "活动说明", font=f_terms_title, fill=DEEP_BLUE)
-        y += 50
+        y += round(50 * bs)
         for idx, item in enumerate(terms_items, 1):
             wrapped_item = textwrap.fill(safe_text(item), width=32)
             lines = wrapped_item.split("\n")
             draw_number_circle(draw, 66, y + 16, 14, idx, f_detail_num, MID_BLUE, WHITE)
             draw.text((92, y), lines[0], font=f_terms_item, fill=INK)
-            y += 40
+            y += round(40 * bs)
             for extra_line in lines[1:]:
                 draw.text((92, y), extra_line, font=f_terms_item, fill=INK)
-                y += 36
-            y += 12
-        y += 20
+                y += round(36 * bs)
+            y += round(12 * bs)
+        y += round(20 * bs)
 
     disclaimer = safe_text(manifest.get("disclaimer_text") or "")
     if disclaimer:
         wrapped_disc = textwrap.fill(disclaimer, width=36)
         draw.multiline_text((48, y), wrapped_disc, font=f_disclaimer, fill=(100, 108, 120), spacing=6)
         bbox = draw.multiline_textbbox((0, 0), wrapped_disc, font=f_disclaimer, spacing=6)
-        y += (bbox[3] - bbox[1]) + 30
+        y += (bbox[3] - bbox[1]) + round(30 * bs)
 
     footer_text = safe_text(manifest.get("footer_text") or "")
     if footer_text:
         bbox = draw.textbbox((0, 0), footer_text, font=f_footer)
         draw.text(((W - (bbox[2] - bbox[0])) / 2, y), footer_text, font=f_footer, fill=(120, 128, 140))
-        y += 50
+        y += round(50 * bs)
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
@@ -1218,8 +1236,13 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
         extra_h += len(course_info) * 58
     if overview_text:
         extra_h += 240
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
+    extra_h = int(extra_h * max(ts, ms, bs, 1.0) * 1.15)
     # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(max(1920, 1500 + extra_h), 3000)
+    canvas_h = min(max(1920, 1500 + extra_h), 3400)
 
     canvas = Image.new("RGBA", (W, canvas_h), DARK)
     photo = cover_resize(bg_img, W, canvas_h).convert("RGBA")
@@ -1232,56 +1255,57 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
     draw.line([(W - 420, -40), (W + 40, 460)], fill=(*GOLD, 80), width=3)
     draw.line([(W - 300, -40), (W + 40, 340)], fill=(*GOLD, 50), width=2)
 
-    f_brand = font([NOTO_BOLD], 22)
-    f_title = font([NOTO_BLACK, NOTO_BOLD], 64)
-    f_subtitle = font([NOTO_BOLD], 32)
-    f_info_item = font([NOTO_BOLD], 29)
-    f_overview_head = font([NOTO_BLACK, NOTO_BOLD], 32)
-    f_overview_body = font([NOTO_REGULAR], 27)
-    f_footer_value = font([NOTO_REGULAR], 25)
+    title_el = safe_text(manifest.get("title") or "")
+    title_lines_el = textwrap.fill(title_el, width=9).split("\n")
+    f_brand = font([NOTO_BOLD], max(14, round(22 * ts)))
+    f_title = fit_font_to_width([NOTO_BLACK, NOTO_BOLD], 64, ts, title_lines_el, W - 96)
+    f_subtitle = font([NOTO_BOLD], max(14, round(32 * ts)))
+    f_info_item = fit_font_to_width([NOTO_BOLD], 29, ms, [safe_text(i) for i in course_info] or [""], W - 96)
+    f_overview_head = font([NOTO_BLACK, NOTO_BOLD], max(14, round(32 * bs)))
+    f_overview_body = font([NOTO_REGULAR], max(14, round(27 * bs)))
+    f_footer_value = font([NOTO_REGULAR], max(14, round(25 * bs)))
 
-    y = 56
+    y = 56 + to
     brand = safe_text(manifest.get("footer_tag") or "")
     if brand:
         bbox = draw.textbbox((0, 0), brand, font=f_brand)
         tw = bbox[2] - bbox[0]
         draw.text((W - 48 - tw, y), brand, font=f_brand, fill=(*GOLD_LIGHT, 235))
-        y += 60
+        y += round(60 * ts)
     else:
-        y += 20
+        y += round(20 * ts)
 
-    title = safe_text(manifest.get("title") or "")
-    wrapped = textwrap.fill(title, width=9)
-    for line in wrapped.split("\n"):
+    for line in title_lines_el:
         draw.text((48, y), line, font=f_title, fill=GOLD_LIGHT, stroke_width=1, stroke_fill=(0, 0, 0, 160))
         bbox = draw.textbbox((0, 0), line, font=f_title)
-        y += (bbox[3] - bbox[1]) + 22
+        y += (bbox[3] - bbox[1]) + round(22 * ts)
     y += 6
 
     subtitle = safe_text(manifest.get("highlight_word") or "")
     if subtitle:
         draw.text((48, y), "〉 " + subtitle, font=f_subtitle, fill=(255, 255, 255, 235))
-        y += 76
-    y += 40
+        y += round(76 * ts)
+    y += round(40 * ts)
+    y += mo
 
     for item in course_info:
         draw.text((48, y), safe_text(item), font=f_info_item, fill=(255, 255, 255, 235))
-        y += 50
-    y += 30
+        y += round(50 * ms)
+    y += round(30 * ms)
 
     if overview_text:
         overview_wrapped = textwrap.fill(overview_text, width=21)
         line_count = overview_wrapped.count("\n") + 1
-        card_h = 100 + line_count * 42
-        card_y = canvas_h - card_h - 130
+        card_h = round((100 + line_count * 42) * bs)
+        card_y = canvas_h - card_h - 130 + bo
         draw.rounded_rectangle([48, card_y, W - 48, card_y + card_h], radius=20, fill=(*GOLD, 235))
         draw.rounded_rectangle([48, card_y - 46, 300, card_y + 12], radius=14, fill=DARK)
         draw.text((70, card_y - 36), "课程概览", font=f_overview_head, fill=GOLD_LIGHT)
         draw.multiline_text((70, card_y + 30), overview_wrapped, font=f_overview_body, fill=(32, 24, 14), spacing=10)
 
-    footer_y = canvas_h - 90
+    footer_y = canvas_h - 90 + bo
     for i, loc in enumerate(locations[:2]):
-        draw.text((48, footer_y + i * 40), safe_text(loc), font=f_footer_value, fill=(255, 255, 255, 220))
+        draw.text((48, footer_y + i * round(40 * bs)), safe_text(loc), font=f_footer_value, fill=(255, 255, 255, 220))
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
@@ -1311,30 +1335,35 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     if achievement_items:
         rows = (len(achievement_items) + 1) // 2
         extra_h += 56 + rows * 52
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
+    extra_h = int(extra_h * max(bs, 1.0) * 1.15)
     # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(max(1920, 1560 + extra_h), 3000)
+    canvas_h = min(max(1920, 1560 + extra_h), 3400)
 
     canvas = Image.new("RGBA", (W, canvas_h), CREAM)
     draw = ImageDraw.Draw(canvas, "RGBA")
 
-    f_tag = font([NOTO_BOLD], 22)
-    f_courses = font([NOTO_REGULAR], 23)
-    f_studio_en = font([NOTO_REGULAR], 38)
-    f_name = font([NOTO_BLACK, NOTO_BOLD], 54)
-    f_role = font([NOTO_BOLD], 28)
-    f_badge_num = font([NOTO_BLACK, NOTO_BOLD], 38)
-    f_section_head = font([NOTO_BOLD], 30)
-    f_item = font([NOTO_REGULAR], 25)
+    f_tag = font([NOTO_BOLD], max(14, round(22 * ts)))
+    f_courses = font([NOTO_REGULAR], max(14, round(23 * ts)))
+    f_studio_en = font([NOTO_REGULAR], max(14, round(38 * ts)))
+    f_name = font([NOTO_BLACK, NOTO_BOLD], max(14, round(54 * ms)))
+    f_role = font([NOTO_BOLD], max(14, round(28 * ms)))
+    f_badge_num = font([NOTO_BLACK, NOTO_BOLD], max(14, round(38 * ts)))
+    f_section_head = font([NOTO_BOLD], max(14, round(30 * bs)))
+    f_item = fit_font_to_width([NOTO_REGULAR], 25, bs, [safe_text(i) for i in bio_items + achievement_items] or [""], (W - 96) // 2 - 20)
 
-    y = 56
+    y = 56 + to
     if courses:
         rect = draw_pill(draw, (48, y), "开设课程", f_tag, fill=(*GOLD, 230), text_fill=(255, 255, 255, 255))
         courses_text = safe_text("丨".join(courses))
         draw.text((rect[2] + 16, y + 8), courses_text, font=f_courses, fill=INK)
-        y += 66
+        y += round(66 * ts)
     if studio_name_en:
         draw.text((48, y), studio_name_en, font=f_studio_en, fill=(*INK, 200))
-        y += 76
+        y += round(76 * ts)
 
     photo_top = y + 16
     photo_h_area = 760
@@ -1352,7 +1381,7 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
             draw.rounded_rectangle([48, photo_top, W - 48, photo_top + photo_h_area], radius=24, fill=(220, 210, 195))
     else:
         draw.rounded_rectangle([48, photo_top, W - 48, photo_top + photo_h_area], radius=24, fill=(220, 210, 195))
-    y = photo_top + photo_h_area + 46
+    y = photo_top + photo_h_area + 46 + mo
 
     if experience_badge:
         bbox = draw.textbbox((0, 0), experience_badge, font=f_badge_num)
@@ -1365,36 +1394,38 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     if teacher_name:
         draw.text((48, y), teacher_name, font=f_name, fill=INK)
         bbox = draw.textbbox((0, 0), teacher_name, font=f_name)
-        y += (bbox[3] - bbox[1]) + 14
+        y += (bbox[3] - bbox[1]) + round(14 * ms)
     if role_label:
         draw.text((48, y), role_label, font=f_role, fill=GOLD)
-        y += 54
-    y += 20
+        y += round(54 * ms)
+    y += round(20 * ms)
     draw.line([(48, y), (W - 48, y)], fill=(*GOLD, 150), width=2)
-    y += 34
+    y += round(34 * ms)
+    y += bo
 
     if bio_items:
         draw.text((48, y), "教师简介", font=f_section_head, fill=INK)
-        y += 58
+        y += round(58 * bs)
         for item in bio_items:
             draw.ellipse([50, y + 11, 58, y + 19], fill=GOLD)
             draw.text((76, y), safe_text(item), font=f_item, fill=INK)
-            y += 52
-        y += 26
+            y += round(52 * bs)
+        y += round(26 * bs)
 
     if achievement_items:
         draw.text((48, y), "教学成果", font=f_section_head, fill=INK)
-        y += 58
+        y += round(58 * bs)
         col_w = (W - 96) // 2
+        row_h = round(52 * bs)
         for idx, item in enumerate(achievement_items):
             col = idx % 2
             row = idx // 2
             item_x = 48 + col * col_w
-            item_y = y + row * 52
+            item_y = y + row * row_h
             draw.ellipse([item_x + 2, item_y + 11, item_x + 10, item_y + 19], fill=GOLD)
             draw.text((item_x + 26, item_y), safe_text(item), font=f_item, fill=INK)
         rows = (len(achievement_items) + 1) // 2
-        y += rows * 52 + 20
+        y += rows * row_h + round(20 * bs)
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 

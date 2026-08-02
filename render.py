@@ -671,6 +671,23 @@ def main():
     except (TypeError, ValueError):
         no_voice_font_size = 52
 
+    # 视频水印/Logo：/api/render-manifest那边已经把enable_watermark和watermark_url
+    # 绑在一起判断过了（水印素材文件真的存在才会是true），这里直接信任这个结果，
+    # 不用再额外判断watermark_url是不是空
+    enable_watermark = bool(manifest.get("enable_watermark"))
+    watermark_url = manifest.get("watermark_url")
+    watermark_position = manifest.get("watermark_position") or "bottom-right"
+    watermark_opacity = manifest.get("watermark_opacity")
+    try:
+        watermark_opacity = float(watermark_opacity) if watermark_opacity else 0.8
+    except (TypeError, ValueError):
+        watermark_opacity = 0.8
+    watermark_scale = manifest.get("watermark_scale")
+    try:
+        watermark_scale = float(watermark_scale) if watermark_scale else 0.15
+    except (TypeError, ValueError):
+        watermark_scale = 0.15
+
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
     # 2. edge-tts 生成配音 + 真实语音时间轴字幕（免费），语音优先用任务里选的那个——
@@ -824,6 +841,45 @@ def main():
             "-vf", subtitle_filter,
             "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path,
         ])
+
+    # 5.5 叠加水印/Logo（如果开启了的话）：单独起一趟ffmpeg，在字幕已经烧录完成的
+    # subtitled_path基础上再叠一层，不去改动上面已经写好、测试过的字幕合成逻辑——
+    # 水印这个功能出问题的话，最多是"没加上水印"，不会连累字幕和视频本身能不能正常生成。
+    # 没开启水印的任务完全走不到这段代码，行为跟以前一模一样
+    if enable_watermark and watermark_url:
+        try:
+            watermark_src_path = f"{WORKDIR}/watermark_src.png"
+            wm_resp = requests.get(watermark_url, timeout=30)
+            wm_resp.raise_for_status()
+            with open(watermark_src_path, "wb") as f:
+                f.write(wm_resp.content)
+            watermarked_path = f"{WORKDIR}/watermarked.mp4"
+            # 水印按视频宽度的百分比缩放（watermark_scale，比如0.15＝视频宽度的15%），
+            # 不管用户上传的水印图片原始尺寸是多大，最终呈现的大小都是统一、可预期的；
+            # 透明度用colorchannelmixer调整alpha通道，不改变水印本身的颜色
+            position_map = {
+                "top-left": "20:20",
+                "top-right": "W-w-20:20",
+                "bottom-left": "20:H-h-20",
+                "bottom-right": "W-w-20:H-h-20",
+                "center": "(W-w)/2:(H-h)/2",
+            }
+            overlay_pos = position_map.get(watermark_position, position_map["bottom-right"])
+            run([
+                "ffmpeg", "-y", "-i", subtitled_path, "-i", watermark_src_path,
+                "-filter_complex",
+                f"[1:v]scale={round(1080 * watermark_scale)}:-2,format=rgba,"
+                f"colorchannelmixer=aa={watermark_opacity}[wm];"
+                f"[0:v][wm]overlay={overlay_pos}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                watermarked_path,
+            ])
+            subtitled_path = watermarked_path
+            print(f"水印叠加完成：位置={watermark_position}，缩放={watermark_scale}，不透明度={watermark_opacity}")
+        except Exception as e:
+            # 水印下载/叠加失败，不能让整条视频渲染跟着失败——退回没有水印的subtitled_path，
+            # 后面步骤照常往下走
+            print("水印叠加失败，跳过（不影响视频正常合成）：", e)
 
     # 6. 准备背景音乐：裁剪到跟成片一样长（正常模式跟配音时长走，纯风光模式跟镜头总时长走，
     # 都已经统一收敛到mix_target_duration这一个变量里了），按设定音量混入（不做淡入淡出/
