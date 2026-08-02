@@ -254,16 +254,22 @@ TITLE_CAPTION_COLOR_SCHEMES = {
 }
 
 
-def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, color_scheme="gold", font_style="standard"):
+def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, color_scheme="gold", font_style="standard", canvas_w=1080, canvas_h=1920):
     """开头顶部大字标题字幕（悬念式大标题样式）：仿照新闻/热门短视频账号常见的开头字幕——
     多行文字叠在画面顶部，两色逐行交替（配色方案可选，见TITLE_CAPTION_COLOR_SCHEMES），
     加粗+黑色描边，只在视频最开头这几秒出现一次，之后自动消失，不会跟下面逐句解说的字幕
     （build_subtitle_ass）冲突——这是完全独立的第二层ASS字幕，渲染的时候在ffmpeg里跟主字幕
     链式叠加(-vf "subtitles=A,subtitles=B")，互不干扰。逐句解说字幕本身还是保持"统一一种颜色"
     不变，多色交替是这层"标题字幕"独有的风格，不会影响到解说字幕那边。
+    canvas_w/canvas_h：字号/边距原本是照着1080×1920这个竖屏尺寸调出来的，选了16:9/1:1这类
+    别的比例时，按画布宽高比例把字号和边距同步缩放一下，不然套用原本给竖屏调的数值，
+    在横屏画面上会显得太小、位置也不对
     """
     if not lines:
         return False
+    scale_w = canvas_w / 1080
+    scale_h = canvas_h / 1920
+    font_size = round(font_size * scale_w)
     font_name = resolve_subtitle_font(font_style, True)
     primary_rgb, secondary_rgb = TITLE_CAPTION_COLOR_SCHEMES.get(color_scheme, TITLE_CAPTION_COLOR_SCHEMES["gold"])
     white_tag = rgb_to_ass_bgr(primary_rgb)
@@ -285,7 +291,7 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, col
         # 用的是同一套按字号折算"一行大概能放多少字"的逻辑，超出的话在这一条内部再换行，
         # 保证不会跑出屏幕；同一条原始标题换行出来的几个小行颜色保持一致，只有不同的
         # 原始标题行之间才会交替颜色
-        sub_lines = split_text_into_single_line_chunks(clean_line, font_size)
+        sub_lines = split_text_into_single_line_chunks(clean_line, font_size, canvas_width=canvas_w)
         wrapped_line = "\\N".join(sub_lines)
         styled_parts.append(f"{{\\c{color}}}{wrapped_line}")
     if not styled_parts:
@@ -295,14 +301,14 @@ def build_title_caption_ass(lines, out_path, duration_sec=4.5, font_size=90, col
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
-        "PlayResX: 1080\n"
-        "PlayResY: 1920\n\n"
+        f"PlayResX: {canvas_w}\n"
+        f"PlayResY: {canvas_h}\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{font_name},{font_size},{white_tag},{white_tag},&H000000&,&H000000&,0,0,0,0,100,100,0,0,"
-        f"1,4,1,8,60,60,120,1\n\n"
+        f"1,4,1,8,{round(60*scale_w)},{round(60*scale_w)},{round(120*scale_h)},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -341,7 +347,7 @@ BOTTOM_CAPTION_STYLE_PRESETS = {
 }
 
 
-def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", color_scheme="gold", max_lines=2, position="bottom"):
+def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, style="news", color_scheme="gold", max_lines=2, position="bottom", canvas_w=1080, canvas_h=1920):
     """底部字幕：跟开头顶部的标题字幕是同一个思路的另一层，位置在画面底部，内容也是AI写脚本
     时额外生成的一组文字（自己独立的内容，跟解说词、标题字幕都不是同一段话）。三种风格靠
     BOTTOM_CAPTION_STYLE_PRESETS分别配置颜色/背景/字体，视觉效果完全不同：
@@ -360,6 +366,9 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
     """
     if not lines:
         return False
+    scale_w = canvas_w / 1080
+    scale_h = canvas_h / 1920
+    font_size = round(font_size * scale_w)
     preset = BOTTOM_CAPTION_STYLE_PRESETS.get(style, BOTTOM_CAPTION_STYLE_PRESETS["news"])
     font_name = resolve_subtitle_font(preset["font_style"], True)
 
@@ -391,7 +400,7 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
         if not clean_line:
             continue
         color = secondary_tag if (secondary_tag and idx % 2 == 1) else primary_tag
-        sub_lines = split_text_into_single_line_chunks(clean_line, font_size)
+        sub_lines = split_text_into_single_line_chunks(clean_line, font_size, canvas_width=canvas_w)
         remaining_budget = max_lines - lines_used
         if len(sub_lines) > remaining_budget:
             sub_lines = sub_lines[:remaining_budget]
@@ -412,18 +421,19 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
     # 不动，保证AI生成的补充底部字幕这条老路径不受影响
     _pos_map = {"top": (8, 90), "middle": (2, 850), "bottom": (2, 260)}
     alignment, margin_v = _pos_map.get(position, _pos_map["bottom"])
+    margin_v = round(margin_v * scale_h)
 
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
-        "PlayResX: 1080\n"
-        "PlayResY: 1920\n\n"
+        f"PlayResX: {canvas_w}\n"
+        f"PlayResY: {canvas_h}\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{font_name},{font_size},{primary_tag},{primary_tag},&H000000&,{back_colour},0,0,0,0,100,100,0,0,"
-        f"{border_style},{outline_val},0,{alignment},60,60,{margin_v},1\n\n"
+        f"{border_style},{outline_val},0,{alignment},{round(60*scale_w)},{round(60*scale_w)},{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -450,7 +460,8 @@ def apply_number_highlight(text, base_color_tag, highlight_color_tag):
 
 
 def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True,
-                        highlight_numbers=True, bg_box=False, font_style="standard", box_scheme="black"):
+                        highlight_numbers=True, bg_box=False, font_style="standard", box_scheme="black",
+                        canvas_w=1080, canvas_h=1920):
     """生成逐句解说字幕的ASS文件
 
     font_size: 字号（数字越大字越大）
@@ -478,7 +489,11 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
         "lower": (2, 420),
         "bottom": (2, 110),
     }
+    scale_w = canvas_w / 1080
+    scale_h = canvas_h / 1920
+    font_size = round(font_size * scale_w)
     alignment, margin_v = position_map.get(position, position_map["bottom"])
+    margin_v = round(margin_v * scale_h)
     color_rgb = SUBTITLE_COLOR_MAP.get(color_key, SUBTITLE_COLOR_MAP["white"])
     box_info = SUBTITLE_BOX_SCHEMES.get(box_scheme, SUBTITLE_BOX_SCHEMES["black"])
     # 背景框选了黄底/白底这类浅色方案的时候，文字还用原来的颜色（比如黄色）会跟浅色底几乎融为
@@ -501,14 +516,14 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
-        "PlayResX: 1080\n"
-        "PlayResY: 1920\n\n"
+        f"PlayResX: {canvas_w}\n"
+        f"PlayResY: {canvas_h}\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,{font_name},{font_size},{color_tag},{color_tag},&H000000&,{back_colour},0,0,0,0,100,100,0,0,"
-        f"{border_style},{outline_val},0,{alignment},60,60,{margin_v},1\n\n"
+        f"{border_style},{outline_val},0,{alignment},{round(60*scale_w)},{round(60*scale_w)},{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -520,7 +535,7 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
         # 按能塞进一行的长度把这句话切成几段，每段单独算一段独立的显示时间（按每段字数
         # 占全句字数的比例，从这句话原本的[start,end]这段时间里按比例分），实现"画面上
         # 任何时刻只有一行字，跟着语速一段一段往下切"的效果，这也是短视频最常见的字幕呈现方式
-        chunks = split_text_into_single_line_chunks(text, font_size)
+        chunks = split_text_into_single_line_chunks(text, font_size, canvas_width=canvas_w)
         total_chars = sum(len(c) for c in chunks) or 1
         total_duration = max(0.01, end - start)
         cursor = start
@@ -547,8 +562,9 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
 # ==================== 字幕生成函数结束 ====================
 
 
-def make_shot_clip(i, shot, duration):
-    """生成单个镜头的标准化竖屏片段。图片素材加 Ken Burns 缓慢缩放效果，避免死画面。"""
+def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
+    """生成单个镜头的标准化片段（尺寸跟着canvas_w/canvas_h走，默认还是原来的竖屏1080x1920）。
+    图片素材加 Ken Burns 缓慢缩放效果，避免死画面。"""
     asset_url = shot["asset_url"]
     asset_type = shot.get("asset_type") or "video"
     ext = "mp4" if asset_type == "video" else "jpg"
@@ -562,7 +578,7 @@ def make_shot_clip(i, shot, duration):
 
     fps = 30
     if asset_type == "video":
-        vf = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        vf = f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
         run([
             "ffmpeg", "-y", "-stream_loop", "-1", "-i", src_path,
             "-t", str(duration), "-vf", vf, "-r", str(fps),
@@ -572,9 +588,9 @@ def make_shot_clip(i, shot, duration):
         frames = max(1, round(duration * fps))
         # Ken Burns：缓慢放大，避免图片素材是一张死画面
         vf = (
-            "scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,"
-            f"zoompan=z='min(zoom+0.0012,1.15)':d={frames}:s=1080x1920:fps={fps},setsar=1"
+            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
+            f"crop={canvas_w}:{canvas_h},"
+            f"zoompan=z='min(zoom+0.0012,1.15)':d={frames}:s={canvas_w}x{canvas_h}:fps={fps},setsar=1"
         )
         run([
             "ffmpeg", "-y", "-loop", "1", "-i", src_path,
@@ -601,6 +617,17 @@ def main():
     shots = manifest["shots"]
     if not shots:
         raise RuntimeError("该任务没有分镜数据")
+    # 画布尺寸按选的比例走：9:16是原本一直用的竖屏尺寸（默认），16:9是横屏（发视频号横版/
+    # B站这类），1:1是方形（朋友圈方形封面）。没传这个字段的老任务，manifest.get(...)拿到的
+    # 是None，走ASPECT_RATIO_DIMENSIONS.get(None, 默认值)这条路，效果跟"选了9:16"完全一样，
+    # 不会因为加了这个新功能就影响到已经生成过的任务
+    ASPECT_RATIO_DIMENSIONS = {
+        "9:16": (1080, 1920),
+        "16:9": (1920, 1080),
+        "1:1": (1080, 1080),
+    }
+    CANVAS_W, CANVAS_H = ASPECT_RATIO_DIMENSIONS.get(manifest.get("aspect_ratio"), (1080, 1920))
+    print(f"输出画布尺寸：{CANVAS_W}x{CANVAS_H}（比例：{manifest.get('aspect_ratio') or '9:16（默认）'}）")
     # 标题字幕/底部字幕选"一直保持"的时候，需要知道整条视频最终大概有多长，让这层字幕的
     # 结束时间对齐到视频结尾，而不是只显示固定的几秒——这里按每个镜头的时长加总估算一下
     total_video_duration = sum(float(s.get("duration_sec") or 3) for s in shots)
@@ -690,15 +717,42 @@ def main():
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
-    # 2. edge-tts 生成配音 + 真实语音时间轴字幕（免费），语音优先用任务里选的那个——
-    # "纯风光+音乐"模式完全跳过这一步：没有配音就没有真实的语音时长可以对齐，画面时长
-    # 直接用每个镜头自己的duration_sec（scale固定为1.0，不做任何缩放）
+    # 配音来源：AI合成语音（默认）/ 用户自己上传的配音文件 / 不配音（纯风光模式，前面已经
+    # 处理过了）。自定义配音和"纯风光模式"是互斥的两个开关，"纯风光模式"优先级更高——
+    # 如果两个都被传true了（理论上前端已经做了互斥，这里是双重保险），按"纯风光模式"处理
+    voice_source = manifest.get("voice_source") or "ai"
+    custom_voice_url = manifest.get("custom_voice_url")
+    use_custom_voice = (not no_voice_mode) and voice_source == "custom" and bool(custom_voice_url)
+
+    # 2. 配音生成——"纯风光+音乐"模式完全跳过这一步：没有配音就没有真实的语音时长可以对齐，
+    # 画面时长直接用每个镜头自己的duration_sec（scale固定为1.0，不做任何缩放）
     if no_voice_mode:
         audio_path = None
         srt_path = None
         audio_duration = None
         scale = 1.0
         print("纯风光+音乐模式：跳过配音生成，画面时长按镜头原本的duration_sec走")
+    elif use_custom_voice:
+        # 用用户自己上传的配音文件，跳过edge-tts合成。这里能拿到真实的音频时长，画面节奏
+        # 还是能跟着配音时长缩放（跟AI配音模式一样）；但没有真实的逐字时间轴——那是edge-tts
+        # 合成语音时的副产品，没法凭空对着一段现成的录音文件反推出"每个字具体是哪一秒说的"，
+        # 字幕这块下一步会退回跟"纯风光模式"一样的处理方式（整段解说词当持续显示的字幕，
+        # 不是跟着语速一句一句精确同步）
+        audio_path = f"{WORKDIR}/audio.mp3"
+        srt_path = None
+        r = requests.get(custom_voice_url, timeout=60)
+        r.raise_for_status()
+        with open(audio_path, "wb") as f:
+            f.write(r.content)
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, text=True, check=True,
+        )
+        audio_duration = float(probe.stdout.strip())
+        planned_total = sum(float(s["duration_sec"]) for s in shots)
+        scale = audio_duration / planned_total if planned_total > 0 else 1.0
+        print(f"使用自定义配音文件，时长 {audio_duration:.2f}s，分镜计划总时长 {planned_total:.2f}s，缩放系数 {scale:.3f}")
     else:
         audio_path = f"{WORKDIR}/audio.mp3"
         srt_path = f"{WORKDIR}/audio.srt"
@@ -728,7 +782,7 @@ def main():
     clip_paths = []
     for i, shot in enumerate(shots):
         duration = max(1.0, float(shot["duration_sec"]) * scale)
-        clip_paths.append(make_shot_clip(i, shot, duration))
+        clip_paths.append(make_shot_clip(i, shot, duration, canvas_w=CANVAS_W, canvas_h=CANVAS_H))
 
     clip_list_path = f"{WORKDIR}/concat_list.txt"
     with open(clip_list_path, "w") as f:
@@ -743,8 +797,9 @@ def main():
 
     # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
-    if no_voice_mode:
-        # "纯风光+音乐"模式：没有真实配音、没有语音时间轴，没法走逐句同步字幕这条路。
+    if no_voice_mode or use_custom_voice:
+        # "纯风光+音乐"模式、以及"自定义配音"模式，都没有真实的语音时间轴（前者压根没配音，
+        # 后者虽然有配音但那是用户自己录的，没法反推逐字时间轴），没法走逐句同步字幕这条路。
         # 直接把每个镜头的解说词原文，当成一块从头到尾持续展示的多行字幕——复用底部字幕
         # （build_bottom_caption_ass）这条已经验证过的多行渲染逻辑，不用另外写一套渲染代码。
         # 显示时长用total_video_duration（整条视频的时长），相当于自带"persist"效果；
@@ -759,7 +814,7 @@ def main():
                     narration_lines, no_voice_caption_path, duration_sec=total_video_duration,
                     font_size=no_voice_font_size, style=no_voice_style,
                     color_scheme=no_voice_color_scheme, max_lines=no_voice_max_lines,
-                    position=no_voice_position,
+                    position=no_voice_position, canvas_w=CANVAS_W, canvas_h=CANVAS_H,
                 ):
                     subtitle_filter = f"subtitles={no_voice_caption_path}:fontsdir={FONTS_DIR}"
                     print(f"纯风光+音乐模式字幕生成完成，共 {len(narration_lines)} 条解说词、最多显示{no_voice_max_lines}行")
@@ -783,6 +838,7 @@ def main():
                 color_key=subtitle_color, bold=subtitle_bold,
                 highlight_numbers=subtitle_highlight_numbers, bg_box=subtitle_bg_box,
                 font_style=subtitle_font_style, box_scheme=subtitle_box_scheme,
+                canvas_w=CANVAS_W, canvas_h=CANVAS_H,
             )
             print(f"字幕生成完成，共 {cue_count} 条")
             # fontsdir指向下载好的站酷快乐体所在目录，libass渲染的时候如果ASS样式里指定的字体名
@@ -794,9 +850,17 @@ def main():
             print("字幕生成失败，退回基础字幕样式：", e)
             # "middle"这里也用跟主路径一样的"从底部往上锚定"方式，理由跟build_subtitle_ass里注释的一样：
             # 真正的正中心对齐在换行行数不一致时会显得位置来回跳。这个兜底路径没法像主路径那样逐条
-            # 微调，只能给一个折中的固定锚点，但至少比之前的"5"（正中心）稳定
+            # 微调，只能给一个折中的固定锚点，但至少比之前的"5"（正中心）稳定。
+            # 这条兜底路径直接把force_style套在原始srt文件上（不像主路径那样生成一份带PlayResX/
+            # PlayResY的完整ASS文件），libass遇到没有指定播放分辨率的字幕源，会直接拿视频本身的
+            # 实际像素尺寸当坐标系——所以这里的MarginV如果不按实际画布高度换算一下，选了16:9/1:1
+            # 这类矮一些的画布时，同样的像素值相对画面的比例会变得完全不对，字幕可能被推到画面外
+            _fallback_scale_w = CANVAS_W / 1080
+            _fallback_scale_h = CANVAS_H / 1920
             _pos_map = {"top": (8, 90), "middle": (2, 850), "lower": (2, 420), "bottom": (2, 110)}
             _align, _mv = _pos_map.get(subtitle_position, _pos_map["bottom"])
+            _mv = round(_mv * _fallback_scale_h)
+            _fallback_font_size = round(subtitle_size * _fallback_scale_w)
             _color_rgb = SUBTITLE_COLOR_MAP.get(subtitle_color, SUBTITLE_COLOR_MAP["white"])
             _color_tag = rgb_to_ass_bgr(_color_rgb)
             _font_name = resolve_subtitle_font(subtitle_font_style, subtitle_bold)
@@ -806,7 +870,7 @@ def main():
             _back_colour = _box_info["back"] if subtitle_bg_box else "&H000000&"
             if subtitle_bg_box and _box_info["text_override"]:
                 _color_tag = rgb_to_ass_bgr(_box_info["text_override"])
-            style = (f"FontName={_font_name},FontSize={subtitle_size},PrimaryColour={_color_tag},"
+            style = (f"FontName={_font_name},FontSize={_fallback_font_size},PrimaryColour={_color_tag},"
                      f"OutlineColour=&H000000&,BackColour={_back_colour},BorderStyle={_border_style},"
                      f"Outline={_outline_val},Alignment={_align},MarginV={_mv}")
             subtitle_filter = f"subtitles={srt_path}:force_style='{style}':fontsdir={FONTS_DIR}"
@@ -819,7 +883,7 @@ def main():
             try:
                 if build_title_caption_ass(title_caption_lines, title_caption_path, duration_sec=title_caption_duration,
                                             font_size=title_caption_font_size, color_scheme=title_caption_color_scheme,
-                                            font_style=title_caption_font_style):
+                                            font_style=title_caption_font_style, canvas_w=CANVAS_W, canvas_h=CANVAS_H):
                     subtitle_filter = f"{subtitle_filter},subtitles={title_caption_path}:fontsdir={FONTS_DIR}"
                     print(f"开头标题字幕生成完成，共 {len(title_caption_lines)} 行")
             except Exception as e:
@@ -830,7 +894,8 @@ def main():
             bottom_caption_path = f"{WORKDIR}/bottom_caption.ass"
             try:
                 if build_bottom_caption_ass(bottom_caption_lines, bottom_caption_path, duration_sec=bottom_caption_duration,
-                                             font_size=subtitle_size, style=bottom_caption_style, color_scheme=bottom_caption_color_scheme):
+                                             font_size=subtitle_size, style=bottom_caption_style, color_scheme=bottom_caption_color_scheme,
+                                             canvas_w=CANVAS_W, canvas_h=CANVAS_H):
                     subtitle_filter = f"{subtitle_filter},subtitles={bottom_caption_path}:fontsdir={FONTS_DIR}"
                     print(f"底部字幕生成完成，共 {len(bottom_caption_lines)} 行")
             except Exception as e:
@@ -868,7 +933,7 @@ def main():
             run([
                 "ffmpeg", "-y", "-i", subtitled_path, "-i", watermark_src_path,
                 "-filter_complex",
-                f"[1:v]scale={round(1080 * watermark_scale)}:-2,format=rgba,"
+                f"[1:v]scale={round(CANVAS_W * watermark_scale)}:-2,format=rgba,"
                 f"colorchannelmixer=aa={watermark_opacity}[wm];"
                 f"[0:v][wm]overlay={overlay_pos}",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
