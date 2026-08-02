@@ -39,9 +39,6 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # 跟触发这个workflow用的�
 TASK_DOMAIN = os.environ.get("TASK_DOMAIN") or "travel"
 TASK_REGION = os.environ.get("TASK_REGION") or ""
 
-GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference/chat/completions"
-GITHUB_MODELS_MODEL = "openai/gpt-4.1"  # 跟这套系统其它地方（自动打标签、脚本生成）用的是同一个免费模型，本身支持图片输入
-
 WORKDIR = "work"
 # 场景切换检测的敏感度：数值越低越容易被判定成"切换了一个新场景"（片段会切得更碎），
 # 数值越高只有变化很剧烈的硬切才会被抓到。0.3是ffmpeg社区比较常用的经验值，兼顾了
@@ -140,11 +137,14 @@ def extract_clip(video_path, start, end, out_path):
 
 def recognize_scene(frame_path):
     """把这一帧截图交给AI看一眼，判断拍的是哪里/是什么内容，以及这一段是不是有实际拆分价值。
-    走的是GitHub Models这个免费接口（跟这套系统其它地方——自动打标签、脚本生成——用的是
-    同一个token、同一个模型），不需要额外注册/配置任何付费API，触发这个workflow本身
-    就已经必须配置GITHUB_TOKEN了，这里直接复用，没有增加新的前提条件。免费接口有请求频率
-    限制，遇到限流（429）会等几秒重试一次，还是不行就跳过这一帧，不影响其它片段继续处理。"""
-    if not GITHUB_TOKEN:
+    2026年7月30日GitHub官方把GitHub Models这个服务彻底关停了（不是限流、是服务本身没了），
+    这里换成智谱的免费图片理解模型GLM-4V-Flash——跟这套系统其它地方（脚本生成、素材翻译）
+    统一用智谱做主力AI服务商。需要在这个GitHub Actions仓库的secrets里配置好ZHIPU_API_KEY
+    （在Cloudflare Pages那边"系统设置→API密钥管理"填的密钥，不会自动同步到这里，需要在
+    GitHub仓库的Settings→Secrets单独配一份同样的值）。免费接口有请求频率限制，遇到限流
+    （429）会等几秒重试一次，还是不行就跳过这一帧，不影响其它片段继续处理。"""
+    zhipu_key = os.environ.get("ZHIPU_API_KEY")
+    if not zhipu_key:
         return None
     with open(frame_path, "rb") as f:
         image_base64 = base64.b64encode(f.read()).decode("utf-8")
@@ -172,9 +172,9 @@ def recognize_scene(frame_path):
 
     def do_request():
         return requests.post(
-            GITHUB_MODELS_ENDPOINT,
-            headers={"Authorization": f"Bearer {GITHUB_TOKEN}", "Content-Type": "application/json"},
-            json={"model": GITHUB_MODELS_MODEL, "max_tokens": 300, "messages": messages},
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            headers={"Authorization": f"Bearer {zhipu_key}", "Content-Type": "application/json"},
+            json={"model": "glm-4v-flash", "max_tokens": 300, "messages": messages},
             timeout=60,
         )
 
