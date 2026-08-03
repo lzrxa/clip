@@ -1477,6 +1477,9 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     highlights = [safe_text(h) for h in (manifest.get("highlights") or [])][:6]
     badge_text = safe_text(manifest.get("badge_text") or "")
     overview_text = safe_text(manifest.get("overview_text") or "")
+    overview_font_size = manifest.get("overview_font_size") or 32
+    if len(overview_text) > 200:
+        overview_text = overview_text[:200] + "……"
 
     # 画布高度按内容动态撑高——这个版式经常是纯文字堆出来的长内容，固定1920很容易不够用
     extra_h = 0
@@ -1486,9 +1489,10 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         extra_h += 160
     if overview_text:
         # 详细说明是一整段话，用跟实际渲染同一套换行宽度(24字符)先估一遍大概几行，
-        # 不能只按"有没有填"简单加一个固定值——内容长短差异可能很大
+        # 不能只按"有没有填"简单加一个固定值——内容长短差异可能很大；每行预留的高度也
+        # 跟着字号走，字号调大之后画布也要跟着多留一些空间，不然大字号情况下容易被挤出画面
         estimated_lines = len(textwrap.fill(overview_text, width=24).split("\n"))
-        extra_h += 40 + estimated_lines * 56
+        extra_h += 40 + estimated_lines * round(56 * overview_font_size / 32)
     extra_h = int(extra_h * max(ms, bs, 1.0) * 1.1)
     canvas_h = min(max(1920, 900 + extra_h), 4200)
 
@@ -1561,9 +1565,17 @@ def build_poster_newsflash(manifest, bg_img, out_path):
 
     if overview_text:
         # 详细说明段落：跟上面几条要点不一样，这个是完整的一段话，不加图标、不是逐条罗列，
-        # 排版上更像新闻正文——专门用来填画面中下部分，内容比较少的时候这一块最容易显得空
-        y += round(20 * bs)
-        f_overview = font([NOTO_REGULAR], max(14, round(30 * bs)))
+        # 排版上更像新闻正文——专门用来填画面中下部分，内容比较少的时候这一块最容易显得空。
+        # 字号用manifest里传来的overview_font_size（用户可以在表单里单独调，不再是写死的
+        # 固定值）；位置沿用"中间区域"的位置偏移(mo)，不用再加一个专属的位置字段；
+        # 字数上限做了兜底截断——不管是AI写的还是手动填的，超过这个长度直接截断加省略号，
+        # 不会因为一段话太长把画布越撑越高、喧宾夺主盖过标题和要点
+        MAX_OVERVIEW_CHARS = 200
+        if len(overview_text) > MAX_OVERVIEW_CHARS:
+            overview_text = overview_text[:MAX_OVERVIEW_CHARS] + "……"
+        y += round(20 * bs) + mo
+        overview_font_size = manifest.get("overview_font_size") or 32
+        f_overview = font([NOTO_REGULAR], max(14, round(overview_font_size * bs)))
         wrapped_overview = textwrap.fill(overview_text, width=24)
         draw.multiline_text((48, y), wrapped_overview, font=f_overview, fill=(255, 255, 255, 225),
                              stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=14)
