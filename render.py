@@ -339,11 +339,16 @@ NEWS_BAR_COLOR_RGB = {
 
 BOTTOM_CAPTION_STYLE_PRESETS = {
     # font_style 和 box 是每种风格固定不变的部分（是否用艺术字体、是否要背景块）；
-    # 具体用什么颜色由 color_scheme 参数决定，三种风格各自从不同的调色板里取色：
-    # news 从 NEWS_BAR_COLOR_RGB 取信息条底色，colorful/artistic 从 TITLE_CAPTION_COLOR_SCHEMES 取字色
+    # 具体用什么颜色由 color_scheme 参数决定，几种风格各自从不同的调色板里取色：
+    # news 从 NEWS_BAR_COLOR_RGB 取信息条底色，colorful/artistic/newsflash 从
+    # TITLE_CAPTION_COLOR_SCHEMES 取字色
     "news": {"font_style": "standard", "box": True},
     "colorful": {"font_style": "standard", "box": False},
     "artistic": {"font_style": "artistic", "box": False},
+    # 新闻快讯风：呼应海报那边新加的"新闻快讯风"版式——加粗描边更重、每行前面加一个
+    # 三角警示符号（不用emoji字符，emoji在不同系统/字体下渲染很不稳定，这里用的是普通
+    # 几何符号▲，属于基础Unicode符号，跟文字用的是同一套字体渲染，不会有缺字问题）
+    "newsflash": {"font_style": "standard", "box": False},
 }
 
 
@@ -384,7 +389,7 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
         if style == "artistic":
             primary_tag = rgb_to_ass_bgr(secondary_rgb)
             secondary_tag = None
-        else:  # colorful
+        else:  # colorful、newsflash 都是白色+配色方案第二色交替
             primary_tag = rgb_to_ass_bgr((255, 255, 255))
             secondary_tag = rgb_to_ass_bgr(secondary_rgb)
 
@@ -399,6 +404,8 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
         clean_line = escape_ass_text(line)
         if not clean_line:
             continue
+        if style == "newsflash":
+            clean_line = "▲ " + clean_line
         color = secondary_tag if (secondary_tag and idx % 2 == 1) else primary_tag
         sub_lines = split_text_into_single_line_chunks(clean_line, font_size, canvas_width=canvas_w)
         remaining_budget = max_lines - lines_used
@@ -412,7 +419,7 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
     text = "\\N".join(styled_parts)
 
     border_style = 3 if preset["box"] else 1
-    outline_val = 10 if preset["box"] else 4
+    outline_val = 10 if preset["box"] else (6 if style == "newsflash" else 4)
     back_colour = rgb_to_ass_back_colour(bar_rgb) if preset["box"] else "&H000000&"
     # 位置：top是真正的顶部对齐（从上往下长，行数变化不会导致位置跳动，适合"纯风光+音乐"
     # 模式那种整段话从头显示到尾的用法）；middle不用真正的正中心对齐（Alignment=5）——跟解说
