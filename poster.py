@@ -1476,6 +1476,7 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     title_lines_nf = textwrap.fill(title_text, width=9).split("\n")
     highlights = [safe_text(h) for h in (manifest.get("highlights") or [])][:6]
     badge_text = safe_text(manifest.get("badge_text") or "")
+    overview_text = safe_text(manifest.get("overview_text") or "")
 
     # 画布高度按内容动态撑高——这个版式经常是纯文字堆出来的长内容，固定1920很容易不够用
     extra_h = 0
@@ -1483,6 +1484,11 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         extra_h += 40 + len(highlights) * 100  # 正文行数多、字号又比其它版式大，预留得更宽松
     if badge_text:
         extra_h += 160
+    if overview_text:
+        # 详细说明是一整段话，用跟实际渲染同一套换行宽度(24字符)先估一遍大概几行，
+        # 不能只按"有没有填"简单加一个固定值——内容长短差异可能很大
+        estimated_lines = len(textwrap.fill(overview_text, width=24).split("\n"))
+        extra_h += 40 + estimated_lines * 56
     extra_h = int(extra_h * max(ms, bs, 1.0) * 1.1)
     canvas_h = min(max(1920, 900 + extra_h), 4200)
 
@@ -1552,6 +1558,18 @@ def build_poster_newsflash(manifest, bg_img, out_path):
                              stroke_width=2, stroke_fill=(0, 0, 0, 200), spacing=10)
         bbox = draw.multiline_textbbox((0, 0), wrapped_item, font=f_body, spacing=10)
         y += (bbox[3] - bbox[1]) + round(36 * bs)
+
+    if overview_text:
+        # 详细说明段落：跟上面几条要点不一样，这个是完整的一段话，不加图标、不是逐条罗列，
+        # 排版上更像新闻正文——专门用来填画面中下部分，内容比较少的时候这一块最容易显得空
+        y += round(20 * bs)
+        f_overview = font([NOTO_REGULAR], max(14, round(30 * bs)))
+        wrapped_overview = textwrap.fill(overview_text, width=24)
+        draw.multiline_text((48, y), wrapped_overview, font=f_overview, fill=(255, 255, 255, 225),
+                             stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=14)
+        bbox = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=14)
+        y += (bbox[3] - bbox[1]) + round(20 * bs)
+
     y += round(20 * bs) + bo
 
     # 底部这一整块（联系方式引导条 + 二维码 + 最底部小标语）统一贴着画布最下方摆放，
