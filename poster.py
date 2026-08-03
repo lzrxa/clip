@@ -1437,6 +1437,28 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
+def wrap_text_by_pixel_width(text, font, max_width):
+    """按实际渲染像素宽度换行，不是按固定字符数——之前用的textwrap.fill(width=24)是按
+    24个字符换行，但同样24个字符，字号选大一点之后实际渲染宽度就会变大，字符数不变但
+    像素宽度早就超出画布了，这也是"详细说明段的字超出右边边界"这个问题的真正原因。
+    这个函数一个字一个字地量实际宽度，宽度快超的时候才换行，不管选多大字号，永远不会
+    超过传进来的max_width——从根上避免超出画布边界，而不是事后再去调字号凑合"""
+    lines = []
+    current_line = ""
+    for ch in text:
+        test_line = current_line + ch
+        bbox = font.getbbox(test_line)
+        width = bbox[2] - bbox[0]
+        if width > max_width and current_line:
+            lines.append(current_line)
+            current_line = ch
+        else:
+            current_line = test_line
+    if current_line:
+        lines.append(current_line)
+    return "\n".join(lines)
+
+
 def draw_warning_triangle(draw, cx, cy, size, fill_color, mark_color):
     """画一个警示三角图标（三角形+感叹号），不依赖emoji字符——emoji在不同系统/字体下渲染
     效果很不稳定，这套系统里但凡需要图标，一直是手工用几何图形画出来的（参考draw_checkmark/
@@ -1480,6 +1502,17 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     overview_font_size = manifest.get("overview_font_size") or 32
     if len(overview_text) > 200:
         overview_text = overview_text[:200] + "……"
+    # 字体、颜色都可以单独选，不用死跟着标题/正文的配色走——详细说明段的字号选项之前已经加过了，
+    # 这次补上字体和颜色，三个一起才算真正"可以自己调"
+    OVERVIEW_FONT_STYLE_MAP = {"standard": NOTO_REGULAR, "artistic": ARTISTIC_FONT}
+    overview_font_path = OVERVIEW_FONT_STYLE_MAP.get(manifest.get("overview_font_style"), NOTO_REGULAR)
+    OVERVIEW_COLOR_MAP = {
+        "white": (255, 255, 255, 225),
+        "gold": (*GOLD, 235),
+        "light": (222, 227, 236, 215),
+    }
+    overview_color_rgba = OVERVIEW_COLOR_MAP.get(manifest.get("overview_color"), (255, 255, 255, 225))
+    f_overview = font([overview_font_path, NOTO_REGULAR], max(14, round(overview_font_size * bs)))
 
     # 画布高度按内容动态撑高——这个版式经常是纯文字堆出来的长内容，固定1920很容易不够用
     extra_h = 0
@@ -1488,10 +1521,10 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     if badge_text:
         extra_h += 160
     if overview_text:
-        # 详细说明是一整段话，用跟实际渲染同一套换行宽度(24字符)先估一遍大概几行，
-        # 不能只按"有没有填"简单加一个固定值——内容长短差异可能很大；每行预留的高度也
-        # 跟着字号走，字号调大之后画布也要跟着多留一些空间，不然大字号情况下容易被挤出画面
-        estimated_lines = len(textwrap.fill(overview_text, width=24).split("\n"))
+        # 详细说明是一整段话，按实际字体+字号量出真实换行结果来估计算行数——不能只按
+        # "有没有填"简单加一个固定值，也不能用固定字符数估算（字号一变，字符数对应的
+        # 实际宽度就变了，估算跟实际渲染对不上，容易导致画布留白不够或者留太多）
+        estimated_lines = len(wrap_text_by_pixel_width(overview_text, f_overview, W - 96).split("\n"))
         extra_h += 40 + estimated_lines * round(56 * overview_font_size / 32)
     extra_h = int(extra_h * max(ms, bs, 1.0) * 1.1)
     canvas_h = min(max(1920, 900 + extra_h), 4200)
@@ -1566,20 +1599,23 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     if overview_text:
         # 详细说明段落：跟上面几条要点不一样，这个是完整的一段话，不加图标、不是逐条罗列，
         # 排版上更像新闻正文——专门用来填画面中下部分，内容比较少的时候这一块最容易显得空。
-        # 字号用manifest里传来的overview_font_size（用户可以在表单里单独调，不再是写死的
-        # 固定值）；位置沿用"中间区域"的位置偏移(mo)，不用再加一个专属的位置字段；
-        # 字数上限做了兜底截断——不管是AI写的还是手动填的，超过这个长度直接截断加省略号，
-        # 不会因为一段话太长把画布越撑越高、喧宾夺主盖过标题和要点
-        MAX_OVERVIEW_CHARS = 200
-        if len(overview_text) > MAX_OVERVIEW_CHARS:
-            overview_text = overview_text[:MAX_OVERVIEW_CHARS] + "……"
+        # 字号、字体、颜色都用manifest里传来的设置（用户可以在表单里单独调）；位置沿用
+        # "中间区域"的位置偏移(mo)，不用再加一个专属的位置字段；字数上限做了兜底截断，
+        # 前面估算画布高度那一步已经处理过，这里直接用同一份处理过的overview_text；
+        # 换行用wrap_text_by_pixel_width按实际渲染宽度来算，不管选多大字号都不会超出
+        # 画布左右边界（这是这一轮修复的重点——之前用固定字符数换行，字号一调大就会超宽）
         y += round(20 * bs) + mo
-        overview_font_size = manifest.get("overview_font_size") or 32
-        f_overview = font([NOTO_REGULAR], max(14, round(overview_font_size * bs)))
-        wrapped_overview = textwrap.fill(overview_text, width=24)
-        draw.multiline_text((48, y), wrapped_overview, font=f_overview, fill=(255, 255, 255, 225),
-                             stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=14)
-        bbox = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=14)
+        wrapped_overview = wrap_text_by_pixel_width(overview_text, f_overview, W - 96)
+        # 之前这里是靠左对齐（固定从x=48开始画），用户反馈希望整段文字居中——这里改成
+        # 先用align="center"量出多行文字整体的包围盒，再把包围盒的中心点对齐到画布中线，
+        # 这样每一行都会各自居中，不是所有行都从同一个x坐标起笔导致长短不一、左边对齐
+        # 右边参差不齐的效果
+        bbox_measure = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=14, align="center")
+        text_w = bbox_measure[2] - bbox_measure[0]
+        x_pos = (W - text_w) / 2 - bbox_measure[0]
+        draw.multiline_text((x_pos, y), wrapped_overview, font=f_overview, fill=overview_color_rgba,
+                             stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=14, align="center")
+        bbox = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=14, align="center")
         y += (bbox[3] - bbox[1]) + round(20 * bs)
 
     y += round(20 * bs) + bo
