@@ -298,7 +298,12 @@ def draw_pill(draw, xy, text, fnt, fill, text_fill, padding=(16, 8)):
 
 def get_contact_image(manifest, size):
     """右下角联系方式图片：有自定义图片（个人二维码截图/logo）优先用它，
-    没有就退回用wechat_link自动生成二维码，都没有就返回None"""
+    没有就退回用wechat_link自动生成二维码，都没有就返回None。
+    hide_contact_image是独立的显示开关——跟logo_url/wechat_link有没有填没关系，这两个字段
+    是会被记住、每次自动带出来的"品牌信息"，之前只能靠手动清空这两个字段才能让这一张不显示
+    二维码，很麻烦。这个开关勾了，不管另外两个字段有没有内容，这一张都不显示"""
+    if manifest.get("hide_contact_image"):
+        return None
     logo_url = manifest.get("logo_url")
     if logo_url:
         try:
