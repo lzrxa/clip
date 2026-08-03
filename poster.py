@@ -1482,15 +1482,25 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     canvas_h = min(max(1920, 900 + extra_h), 4200)
 
     canvas = Image.new("RGBA", (W, canvas_h), BG)
+    if bg_img:
+        # 有背景图的话，铺满整个画布，再压一层半透明的深色（配色方案的dark色），保证不管
+        # 画面哪个位置，白字/金字都还压得住，同时能看出背景图的内容——不是必须配图，
+        # 但选了的话比纯渐变更有画面感，跟你参考的那几张新闻截图更接近
+        photo = cover_resize(bg_img, W, canvas_h).convert("RGBA")
+        canvas.paste(photo, (0, 0))
+        wash = Image.new("RGBA", (W, canvas_h), (*DARK, 215))
+        canvas = Image.alpha_composite(canvas, wash)
+    else:
+        # 没有配图就用原来的纯渐变底色——不需要任何照片素材，选题材料不够、或者就是想发
+        # 一条纯文字快讯的时候能用，这也是这个版式区别于其它几个"必须配图"版式的地方
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        for yy in range(canvas_h):
+            t = yy / max(1, canvas_h)
+            r = int(DARK[0] + (MID[0] - DARK[0]) * min(1.0, t * 1.6))
+            g = int(DARK[1] + (MID[1] - DARK[1]) * min(1.0, t * 1.6))
+            b = int(DARK[2] + (MID[2] - DARK[2]) * min(1.0, t * 1.6))
+            draw.line([(0, yy), (W, yy)], fill=(r, g, b, 255))
     draw = ImageDraw.Draw(canvas, "RGBA")
-    # 整张背景就是一块从深到中间色的竖直渐变，不需要任何照片素材——这也是这个版式区别于
-    # 其它几个"必须配图"版式的地方，选题材料不够、或者就是想发一条纯文字快讯的时候能用
-    for yy in range(canvas_h):
-        t = yy / max(1, canvas_h)
-        r = int(DARK[0] + (MID[0] - DARK[0]) * min(1.0, t * 1.6))
-        g = int(DARK[1] + (MID[1] - DARK[1]) * min(1.0, t * 1.6))
-        b = int(DARK[2] + (MID[2] - DARK[2]) * min(1.0, t * 1.6))
-        draw.line([(0, yy), (W, yy)], fill=(r, g, b, 255))
 
     f_masthead = font([NOTO_BOLD], max(14, round(26 * ts)))
     f_title = fit_font_to_width([NOTO_BLACK, NOTO_BOLD], 84, ms, title_lines_nf, W - 96)
@@ -1615,11 +1625,23 @@ def build_poster(manifest, bg_img, out_path):
 def main():
     os.makedirs(WORKDIR, exist_ok=True)
     manifest = fetch_manifest()
-    # "教师个人简介版"、"新闻快讯风"这两个版式都不需要一张"背景图"——前者主视觉是老师照片
-    # 本身，后者是纯渐变底色+文字，走的都不是"照片+文字浮在上面"那种结构。这里跳过背景图
-    # 获取，省一次下载/AI生成，用户选这两个版式时也不需要去选背景素材
-    if manifest.get("template") in ("teacher_profile", "newsflash"):
+    # "教师个人简介版"不需要背景图——主视觉是老师照片本身，走的是浅色卡纸底色，不是
+    # "照片+文字浮在上面"那种结构，这里跳过背景图获取，省一次下载/AI生成
+    if manifest.get("template") == "teacher_profile":
         bg_img = None
+    elif manifest.get("template") == "newsflash":
+        # "新闻快讯风"的背景图是可选的——选了就用（照片+半透明深色遮罩），没选就用纯渐变
+        # 底色，跟其它版式"选了'用真实素材'模式但没选具体素材"会直接报错中断渲染不一样，
+        # 这里不管有没有配图都要能正常出图
+        has_bg_source = bool(manifest.get("background_url")) or manifest.get("background_source") == "ai"
+        if has_bg_source:
+            try:
+                bg_img = get_background(manifest)
+            except Exception as e:
+                print("新闻快讯风背景图获取失败，退回纯渐变底色（不影响正常生成）：", e)
+                bg_img = None
+        else:
+            bg_img = None
     else:
         bg_img = get_background(manifest)
 
