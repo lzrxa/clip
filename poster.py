@@ -1504,7 +1504,7 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         overview_text = overview_text[:200] + "……"
     # 字体、颜色都可以单独选，不用死跟着标题/正文的配色走——详细说明段的字号选项之前已经加过了，
     # 这次补上字体和颜色，三个一起才算真正"可以自己调"
-    OVERVIEW_FONT_STYLE_MAP = {"standard": NOTO_REGULAR, "artistic": ARTISTIC_FONT}
+    OVERVIEW_FONT_STYLE_MAP = {"standard": NOTO_REGULAR, "bold": NOTO_BOLD, "artistic": ARTISTIC_FONT}
     overview_font_path = OVERVIEW_FONT_STYLE_MAP.get(manifest.get("overview_font_style"), NOTO_REGULAR)
     OVERVIEW_COLOR_MAP = {
         "white": (255, 255, 255, 225),
@@ -1523,9 +1523,11 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     if overview_text:
         # 详细说明是一整段话，按实际字体+字号量出真实换行结果来估计算行数——不能只按
         # "有没有填"简单加一个固定值，也不能用固定字符数估算（字号一变，字符数对应的
-        # 实际宽度就变了，估算跟实际渲染对不上，容易导致画布留白不够或者留太多）
-        estimated_lines = len(wrap_text_by_pixel_width(overview_text, f_overview, W - 96).split("\n"))
-        extra_h += 40 + estimated_lines * round(56 * overview_font_size / 32)
+        # 实际宽度就变了，估算跟实际渲染对不上，容易导致画布留白不够或者留太多）。
+        # 换行宽度要跟实际渲染那步用同一个值（W-144，留了卡片内边距的空间），
+        # 每行预留的高度也要把新加的行距(22)算进去，不然估的还是旧版更紧凑的排版
+        estimated_lines = len(wrap_text_by_pixel_width(overview_text, f_overview, W - 144).split("\n"))
+        extra_h += 50 + 38 + 56 + estimated_lines * round(62 * overview_font_size / 32)  # 分隔线+卡片内边距+分段间距都算进去
     extra_h = int(extra_h * max(ms, bs, 1.0) * 1.1)
     canvas_h = min(max(1920, 900 + extra_h), 4200)
 
@@ -1603,20 +1605,34 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         # "中间区域"的位置偏移(mo)，不用再加一个专属的位置字段；字数上限做了兜底截断，
         # 前面估算画布高度那一步已经处理过，这里直接用同一份处理过的overview_text；
         # 换行用wrap_text_by_pixel_width按实际渲染宽度来算，不管选多大字号都不会超出
-        # 画布左右边界（这是这一轮修复的重点——之前用固定字符数换行，字号一调大就会超宽）
-        y += round(20 * bs) + mo
-        wrapped_overview = wrap_text_by_pixel_width(overview_text, f_overview, W - 96)
-        # 之前这里是靠左对齐（固定从x=48开始画），用户反馈希望整段文字居中——这里改成
-        # 先用align="center"量出多行文字整体的包围盒，再把包围盒的中心点对齐到画布中线，
-        # 这样每一行都会各自居中，不是所有行都从同一个x坐标起笔导致长短不一、左边对齐
-        # 右边参差不齐的效果
-        bbox_measure = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=14, align="center")
+        # 画布左右边界。
+        #
+        # 这一版重新设计了这段文字跟上面"要点清单"之间的过渡——原来只留了20px的间距，
+        # 两块内容几乎贴在一起，观感上像是同一段没分开；现在加大间距、加一条小小的
+        # 金色分隔线当"换了个段落"的视觉提示，段落本身再垫一块半透明的卡片底色——
+        # 不是必须的装饰，但让这段正文从背景照片/渐变里"浮"出来，读起来更像一块
+        # 精心排过版的阅读区，而不是文字直接堆在图片上
+        y += round(50 * bs) + mo
+        divider_w = round(70 * bs)
+        draw.rectangle([W / 2 - divider_w / 2, y, W / 2 + divider_w / 2, y + 4], fill=(*GOLD, 220))
+        y += round(34 * bs)
+
+        wrapped_overview = wrap_text_by_pixel_width(overview_text, f_overview, W - 144)
+        line_spacing = 22
+        bbox_measure = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=line_spacing, align="center")
         text_w = bbox_measure[2] - bbox_measure[0]
+        text_h = bbox_measure[3] - bbox_measure[1]
+        panel_pad_x, panel_pad_y = 32, 28
+        panel_left = (W - text_w) / 2 - panel_pad_x
+        panel_right = (W + text_w) / 2 + panel_pad_x
+        panel_top = y - panel_pad_y
+        panel_bottom = y + text_h + panel_pad_y
+        draw.rounded_rectangle([panel_left, panel_top, panel_right, panel_bottom], radius=18, fill=(*DARK, 90))
+
         x_pos = (W - text_w) / 2 - bbox_measure[0]
         draw.multiline_text((x_pos, y), wrapped_overview, font=f_overview, fill=overview_color_rgba,
-                             stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=14, align="center")
-        bbox = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=14, align="center")
-        y += (bbox[3] - bbox[1]) + round(20 * bs)
+                             stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=line_spacing, align="center")
+        y = panel_bottom + round(20 * bs)
 
     y += round(20 * bs) + bo
 
