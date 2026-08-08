@@ -731,6 +731,10 @@ def main():
         watermark_scale = float(watermark_scale) if watermark_scale else 0.15
     except (TypeError, ValueError):
         watermark_scale = 0.15
+    # 文字水印（比如"Copyright @ 账号名"这种签名式小字）——跟图片水印是二选一，
+    # 有watermark_url就按图片处理，没有但有watermark_text就按文字处理，两个都没有
+    # 就是没开水印（前面enable_watermark已经把这几种情况统一判断过了）
+    watermark_text = manifest.get("watermark_text")
 
     full_text = "。".join(s["narration"] for s in shots if s.get("narration"))
 
@@ -962,6 +966,58 @@ def main():
             # 水印下载/叠加失败，不能让整条视频渲染跟着失败——退回没有水印的subtitled_path，
             # 后面步骤照常往下走
             print("水印叠加失败，跳过（不影响视频正常合成）：", e)
+    elif enable_watermark and watermark_text:
+        # 文字水印（比如"Copyright @ 账号名"这种签名式小字）——跟图片水印是完全独立的
+        # 另一条路径，不用先下载图片再合成，直接用ffmpeg的drawtext把文字写到画面上，
+        # 位置/不透明度跟图片水印共用同一套设置项，观感上是同一个功能的两种呈现方式
+        try:
+            watermarked_path = f"{WORKDIR}/watermarked.mp4"
+            # 字号按视频宽度的比例换算，跟图片水印"按视频宽度百分比缩放"是同一个思路，
+            # 不管画布是9:16还是16:9，文字水印看起来的相对大小都差不多；watermark_scale
+            # 这个参数原本是给图片用的百分比，文字场景没有直接的对应关系，需要一个折算系数。
+            # 这个系数不是拍脑袋定的，是真的用ffmpeg渲染测试过挑出来的——最早试过0.85，
+            # 默认缩放(0.15)下算出来138px，跟标题字幕差不多大了，完全不像"低调的小签名
+            # 水印"该有的样子；改成0.28之后默认缩放对应45px，视觉上跟参考的水印效果
+            # （比如"Copyright @ 账号名"这种）比例接近，不会喧宾夺主
+            font_size = max(14, round(CANVAS_W * watermark_scale * 0.28))
+            # drawtext的文字定位表达式：跟图片水印的position_map是同一个位置体系，
+            # 只是坐标表达式语法不同（这里用text_w/text_h，overlay滤镜用w/h）
+            text_position_map = {
+                "top-left": "x=24:y=24",
+                "top-right": "x=w-text_w-24:y=24",
+                "bottom-left": "x=24:y=h-text_h-24",
+                "bottom-right": "x=w-text_w-24:y=h-text_h-24",
+                "center": "x=(w-text_w)/2:y=(h-text_h)/2",
+            }
+            text_pos = text_position_map.get(watermark_position, text_position_map["bottom-right"])
+            # 转义drawtext的text参数——这几个字符在ffmpeg filter语法里有特殊含义，处理不对
+            # 的话会导致渲染出问题。这里不是凭感觉写的转义规则，是真的用ffmpeg跑过验证：
+            # 冒号(:)用反斜杠转义能正常显示；单引号(')转义后虽然不报错，但那个字符会被
+            # 悄悄吞掉（比如"it's"会显示成"its"），百分号(%)不管怎么转义都会导致
+            # "Stray %"解析错误、整个drawtext滤镜失效——不是报错终止，是悄悄地什么文字都
+            # 不渲染，水印摆设了都不知道。水印本来就是一句简短的签名文字，不值得为了兼容
+            # 这几个边缘字符冒renders出问题的风险，直接干脆地把它们从水印文字里去掉，
+            # 反斜杠、单引号、百分号都不留，冒号可以留着，用反斜杠转义正常显示
+            escaped_text = (
+                watermark_text.replace("\\", "")
+                .replace("'", "")
+                .replace("%", "")
+                .replace(":", "\\:")
+            )
+            run([
+                "ffmpeg", "-y", "-i", subtitled_path,
+                "-vf",
+                f"drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text='{escaped_text}':fontsize={font_size}:"
+                f"fontcolor=white@{watermark_opacity}:{text_pos}:"
+                "shadowcolor=black@0.5:shadowx=1:shadowy=1",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "copy",
+                watermarked_path,
+            ])
+            subtitled_path = watermarked_path
+            print(f"文字水印叠加完成：内容={watermark_text}，位置={watermark_position}，不透明度={watermark_opacity}")
+        except Exception as e:
+            print("文字水印叠加失败，跳过（不影响视频正常合成）：", e)
 
     # 6. 准备背景音乐：裁剪到跟成片一样长（正常模式跟配音时长走，纯风光模式跟镜头总时长走，
     # 都已经统一收敛到mix_target_duration这一个变量里了），按设定音量混入（不做淡入淡出/
