@@ -658,10 +658,14 @@ def build_poster_promo(manifest, bg_img, out_path):
     tw = bbox[2] - bbox[0]
     draw.text(((W - tw) / 2, title_y), title, font=f_title, fill=(255, 255, 255, 255),
                stroke_width=3, stroke_fill=(0, 0, 0, 255))
+    # 价格焦点区之前是死死锚在画布底部往上量的（H-700），标题短的时候，中间会空出
+    # 一大截纯色背景，看着像是没画完，不是刻意留白。改成跟着标题实际结束的位置往下走，
+    # 留一段够"价格揭晓"这种戏剧性停顿感的间距（不是紧贴着），但不会变成大片空白
+    title_bottom = title_y + (bbox[3] - bbox[1])
+    hero_y = min(title_bottom + round(140 * ms), H - 700 + bo)
 
     # 价格焦点区：第一档价格做成超大"起"价展示，其余档位小字排在下面
     tiers = manifest.get("price_tiers") or []
-    hero_y = H - 700 + bo
     if tiers:
         hero = tiers[0]
         label_text = f"{safe_text(hero.get('label', ''))} 起"
@@ -809,11 +813,12 @@ def build_poster_recruit(manifest, bg_img, out_path):
     if course_info:
         y_est += 90 + len(course_info) * 74
     y_est += 160  # 底部tagline+留白
-    # 缩放影响每个区块实际占用的高度，这里粗略按各区平均缩放系数再加一截余量，避免
-    # 字号调大之后画布反而撑不够高、内容被挤出底部
-    y_est = int(y_est * max(ts, ms, bs, 1.0) * 1.15)
-    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(max(1920, y_est), 4200)
+    # 这个y_est之前身兼两职：既用来当画布的实际绘制高度，又用来估计最终成品该多高——
+    # 两者绑在一起，估算一旦跟实际画出来的内容对不上（估太多或估太少），要么留一堆空白，
+    # 要么内容被挤出画布边缘。现在拆开：画布画图的时候统一给够大的空间（4200，跟新闻
+    # 快讯风的做法一致），保证不管估算准不准，内容都能完整画出来，不会被截断；
+    # 最终成品该多高，改成画完之后按真实画到哪来裁剪决定，不再依赖这个预估数字
+    canvas_h = 4200
 
     canvas = Image.new("RGBA", (W, canvas_h), CREAM)
     photo = cover_resize(bg_img, W, photo_h).convert("RGBA")
@@ -936,6 +941,13 @@ def build_poster_recruit(manifest, bg_img, out_path):
         draw.text(((W - tw) / 2, y), bottom_tagline, font=f_bottom, fill=MAROON)
         y += round(60 * bs)
 
+    # 跟新闻快讯风是同一个毛病、同一个药方：预估公式（y_est那一串加加减减）算出来的高度，
+    # 经常比实际画出来的内容高出一大截，海报下半截会空出一整块纯色背景，内容全部被
+    # 挤在上半部分。这里同样改成"按实际画到哪收尾裁剪"，不再依赖预估数字
+    final_h = max(1400, min(canvas_h, round(y + 40)))
+    if final_h < canvas_h:
+        canvas = canvas.crop((0, 0, W, final_h))
+
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
@@ -999,8 +1011,9 @@ def build_poster_dual_track(manifest, bg_img, out_path):
     ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
     ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
     bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
-    y_est = int(y_est * max(ts, ms, bs, 1.0) * 1.15)
-    canvas_h = min(max(1920, y_est), 4200)  # 板块多，上限比其它版式放宽一些
+    # 跟招生介绍版是同一处改动：画布画图的时候统一给够大的空间，不再依赖这个预估
+    # 数字来决定画布大小，最终成品高度改成画完之后按真实内容裁剪决定
+    canvas_h = 4200
 
     canvas = Image.new("RGBA", (W, canvas_h), LIGHT_BLUE)
     hero = cover_resize(bg_img, W, hero_h).convert("RGBA")
@@ -1218,6 +1231,10 @@ def build_poster_dual_track(manifest, bg_img, out_path):
         draw.text(((W - (bbox[2] - bbox[0])) / 2, y), footer_text, font=f_footer, fill=(120, 128, 140))
         y += round(50 * bs)
 
+    final_h = max(1400, min(canvas_h, round(y + 40)))
+    if final_h < canvas_h:
+        canvas = canvas.crop((0, 0, W, final_h))
+
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
 
@@ -1247,9 +1264,16 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
     ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
     ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
     bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
-    extra_h = int(extra_h * max(ts, ms, bs, 1.0) * 1.15)
-    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(max(1920, 1500 + extra_h), 3400)
+    # 跟其它几个版式是同一处改动：画布画图的时候统一给够大的空间，底部"课程概览"卡片、
+    # 底部信息行也从"锚定在canvas_h底部"改成跟着上面内容自然往下排，不再依赖对canvas_h
+    # 的预估——这两种改法都是为了同一个目的：最终海报有多高，交给"内容实际画到哪"来
+    # 决定，不再靠一个可能跟实际不符的公式去猜
+    # 这个版式的背景照片是直接按canvas_h做cover_resize的（跟招生介绍版、双人群专场版
+    # 不一样，那两个版式的照片高度是单独一个固定值，不受canvas_h影响）——如果这里也用
+    # 4200那么大的画布，照片会被放大裁切得比实际需要的更狠，画面裁得过紧。这里改用一个
+    # 更贴近实际需求的高度（3000，留了充分但不过量的余地），既不会内容被截断，
+    # 也不会让照片被过度放大
+    canvas_h = 3000
 
     canvas = Image.new("RGBA", (W, canvas_h), DARK)
     photo = cover_resize(bg_img, W, canvas_h).convert("RGBA")
@@ -1304,15 +1328,25 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
         overview_wrapped = textwrap.fill(overview_text, width=21)
         line_count = overview_wrapped.count("\n") + 1
         card_h = round((100 + line_count * 42) * bs)
-        card_y = canvas_h - card_h - 130 + bo
+        # 这张卡片之前是"贴着canvas_h的底部往上量"来定位的——canvas_h一旦跟实际内容对不上，
+        # 卡片就会被顶到一个跟上面内容离得很远的地方，中间空出一大截。现在改成紧跟在
+        # 上面内容后面往下排，两者之间留一段呼吸间距就行，不用再关心canvas_h具体是多少
+        card_y = y + round(50 * bs)
         draw.rounded_rectangle([48, card_y, W - 48, card_y + card_h], radius=20, fill=(*GOLD, 235))
         draw.rounded_rectangle([48, card_y - 46, 300, card_y + 12], radius=14, fill=DARK)
         draw.text((70, card_y - 36), "课程概览", font=f_overview_head, fill=GOLD_LIGHT)
         draw.multiline_text((70, card_y + 30), overview_wrapped, font=f_overview_body, fill=(32, 24, 14), spacing=10)
+        y = card_y + card_h + round(50 * bs)
 
-    footer_y = canvas_h - 90 + bo
+    footer_y = y
     for i, loc in enumerate(locations[:2]):
         draw.text((48, footer_y + i * round(40 * bs)), safe_text(loc), font=f_footer_value, fill=(255, 255, 255, 220))
+    if locations[:2]:
+        y = footer_y + len(locations[:2]) * round(40 * bs)
+
+    final_h = max(1400, min(canvas_h, round(y + 60)))
+    if final_h < canvas_h:
+        canvas = canvas.crop((0, 0, W, final_h))
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
@@ -1346,9 +1380,9 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
     ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
     bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
-    extra_h = int(extra_h * max(bs, 1.0) * 1.15)
-    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(max(1920, 1560 + extra_h), 3400)
+    # 跟其它几个版式是同一处改动：这个版式的照片走的是独立的固定尺寸(photo_h_area)，
+    # 不受canvas_h影响，所以这里直接用4200这个够大的画布也不会有照片被过度放大的问题
+    canvas_h = 4200
 
     canvas = Image.new("RGBA", (W, canvas_h), CREAM)
     draw = ImageDraw.Draw(canvas, "RGBA")
@@ -1433,6 +1467,10 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
             draw.text((item_x + 26, item_y), safe_text(item), font=f_item, fill=INK)
         rows = (len(achievement_items) + 1) // 2
         y += rows * row_h + round(20 * bs)
+
+    final_h = max(1400, min(canvas_h, round(y + 40)))
+    if final_h < canvas_h:
+        canvas = canvas.crop((0, 0, W, final_h))
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
