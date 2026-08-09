@@ -1607,11 +1607,10 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         # 换行用wrap_text_by_pixel_width按实际渲染宽度来算，不管选多大字号都不会超出
         # 画布左右边界。
         #
-        # 这一版重新设计了这段文字跟上面"要点清单"之间的过渡——原来只留了20px的间距，
-        # 两块内容几乎贴在一起，观感上像是同一段没分开；现在加大间距、加一条小小的
-        # 金色分隔线当"换了个段落"的视觉提示，段落本身再垫一块半透明的卡片底色——
-        # 不是必须的装饰，但让这段正文从背景照片/渐变里"浮"出来，读起来更像一块
-        # 精心排过版的阅读区，而不是文字直接堆在图片上
+        # 这段文字跟上面"要点清单"之间留了间距、加一条小小的金色分隔线当"换了个段落"的
+        # 视觉提示。之前这里还垫了一块半透明卡片底色，让文字从背景照片/渐变里"浮"出来——
+        # 但实际看下来，这块底色反而显得多余，文字本身配了描边（stroke），在各种背景上
+        # 已经够清晰了，不需要额外的卡片背景来保证可读性，所以这次去掉了
         y += round(50 * bs) + mo
         divider_w = round(70 * bs)
         draw.rectangle([W / 2 - divider_w / 2, y, W / 2 + divider_w / 2, y + 4], fill=(*GOLD, 220))
@@ -1622,17 +1621,11 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         bbox_measure = draw.multiline_textbbox((0, 0), wrapped_overview, font=f_overview, spacing=line_spacing, align="center")
         text_w = bbox_measure[2] - bbox_measure[0]
         text_h = bbox_measure[3] - bbox_measure[1]
-        panel_pad_x, panel_pad_y = 32, 28
-        panel_left = (W - text_w) / 2 - panel_pad_x
-        panel_right = (W + text_w) / 2 + panel_pad_x
-        panel_top = y - panel_pad_y
-        panel_bottom = y + text_h + panel_pad_y
-        draw.rounded_rectangle([panel_left, panel_top, panel_right, panel_bottom], radius=18, fill=(*DARK, 90))
 
         x_pos = (W - text_w) / 2 - bbox_measure[0]
         draw.multiline_text((x_pos, y), wrapped_overview, font=f_overview, fill=overview_color_rgba,
                              stroke_width=1, stroke_fill=(0, 0, 0, 160), spacing=line_spacing, align="center")
-        y = panel_bottom + round(20 * bs)
+        y = y + text_h + round(28 * bs)
 
     y += round(20 * bs) + bo
 
