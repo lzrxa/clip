@@ -1499,19 +1499,24 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     highlights = [safe_text(h) for h in (manifest.get("highlights") or [])][:6]
     badge_text = safe_text(manifest.get("badge_text") or "")
     overview_text = safe_text(manifest.get("overview_text") or "")
-    overview_font_size = manifest.get("overview_font_size") or 32
+    overview_font_size = manifest.get("overview_font_size") or 40
     if len(overview_text) > 200:
         overview_text = overview_text[:200] + "……"
     # 字体、颜色都可以单独选，不用死跟着标题/正文的配色走——详细说明段的字号选项之前已经加过了，
     # 这次补上字体和颜色，三个一起才算真正"可以自己调"
     OVERVIEW_FONT_STYLE_MAP = {"standard": NOTO_REGULAR, "bold": NOTO_BOLD, "artistic": ARTISTIC_FONT}
     overview_font_path = OVERVIEW_FONT_STYLE_MAP.get(manifest.get("overview_font_style"), NOTO_REGULAR)
+    # "warm"是新加的默认色——纯白色配纯黑描边，虽然清楚，但跟海报里其它元素（标题、
+    # badge横幅、星星图标）全都用的暖金色系比起来，显得有点割裂、不够精致。改成一个
+    # 带一点暖调的米白色，跟金色是同一个色系，视觉上更统一、也更有质感，纯白色还留着
+    # 作为一个可选项，不强迫谁都用新默认色
     OVERVIEW_COLOR_MAP = {
+        "warm": (248, 240, 221, 235),
         "white": (255, 255, 255, 225),
         "gold": (*GOLD, 235),
         "light": (222, 227, 236, 215),
     }
-    overview_color_rgba = OVERVIEW_COLOR_MAP.get(manifest.get("overview_color"), (255, 255, 255, 225))
+    overview_color_rgba = OVERVIEW_COLOR_MAP.get(manifest.get("overview_color"), (248, 240, 221, 235))
     f_overview = font([overview_font_path, NOTO_REGULAR], max(14, round(overview_font_size * bs)))
 
     # 画布高度：以前是靠预估公式（数标题字数、数几条要点、算详细说明能换几行……）拼凑出
