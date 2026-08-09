@@ -362,8 +362,11 @@ def build_poster_standard(manifest, bg_img, out_path):
     locations_shown = all_locations[:MAX_LOCATIONS]
     locations_more = len(all_locations) - len(locations_shown)
 
-    # 画布高度按内容动态撑高：填得越多，海报就越长，但现在有了上面那个"每板块最多显示几条"
-    # 的上限兜底，不会再无限长下去
+    # 画布高度：跟其它几个版式是同一处改动，不再用"1920+extra_h"这个预估值直接定画布
+    # 大小——content_y现在改成跟着标题实际结束的位置走，不再跟extra_h绑定，这个预估值
+    # 已经不能准确反映画完之后实际要用多高了。改成画图的时候统一给够大的空间，
+    # 最终高度按真实内容画到哪来裁剪决定。extra_h/has_extra_content这两个变量在其它地方
+    # （比如要不要给照片底部加渐变过渡）还有用，继续保留
     extra_h = 0
     if highlights_shown:
         extra_h += 90 + len(highlights_shown) * 46 + (40 if highlights_more > 0 else 0)
@@ -371,8 +374,7 @@ def build_poster_standard(manifest, bg_img, out_path):
         extra_h += 90 + len(accommodations_shown) * 46 + (40 if accommodations_more > 0 else 0)
     if departure_info:
         extra_h += 90
-    # 保险上限：不管内容填多少，海报最终都不会超过这个高度，避免变成失控的长图
-    canvas_h = min(1920 + extra_h, 3000)
+    canvas_h = 4200
     has_extra_content = extra_h > 0
 
     # 关键修复：照片不能被强行拉伸去撑满整个加长后的画布（那样画面会变形拉花）。
@@ -391,8 +393,10 @@ def build_poster_standard(manifest, bg_img, out_path):
         # 照片底部到下方纯色内容区之间做一个柔和过渡，不要生硬的分界线
         add_vertical_gradient(canvas, (0, 1720, W, 1920), 0, 235)
     else:
-        # 没有额外内容板块时，价格和footer还是直接叠在照片底部，需要原来的深色遮罩衬托
-        add_vertical_gradient(canvas, (0, canvas_h - 620, W, canvas_h), 30, 190)
+        # 没有额外内容板块时，价格和footer还是直接叠在照片底部，需要原来的深色遮罩衬托——
+        # 这里改用固定的1920做基准，不能再用canvas_h（现在是画图用的超大画布，不是
+        # 最终高度），没有额外内容板块的情况下，成品高度本来就会稳定在1920附近
+        add_vertical_gradient(canvas, (0, 1300, W, 1920), 30, 190)
 
     title_font_path = TITLE_FONT_MAP.get(manifest.get("title_font_weight"), ARTISTIC_FONT)
     ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
@@ -414,7 +418,6 @@ def build_poster_standard(manifest, bg_img, out_path):
     f_price_label = font([NOTO_BOLD], max(14, round(26 * bs)))
     f_price = font([NOTO_BOLD], max(14, round(70 * bs)))
     f_price_unit = font([NOTO_BOLD], max(14, round(26 * bs)))
-    f_footer = font([NOTO_REGULAR], max(14, round(24 * bs)))
     f_tag_bottom = font([NOTO_BOLD], max(14, round(26 * bs)))
 
     # 左上角：景点清单（超过上限的部分用"等共N个目的地"收尾，不会无限往下排挤占标题的位置）
@@ -458,15 +461,21 @@ def build_poster_standard(manifest, bg_img, out_path):
                    stroke_width=4, stroke_fill=(0, 0, 0, 255))
         mid_y += round(130 * ms)
 
+    title_bottom = mid_y
     if manifest.get("subtitle_en"):
         spaced = " ".join(list(safe_text(manifest["subtitle_en"]).replace(" ", "")))
         bbox = draw.textbbox((0, 0), spaced, font=f_subtitle)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, mid_y + 20), spaced, font=f_subtitle, fill=(255, 255, 255, 230),
                    stroke_width=1, stroke_fill=(0, 0, 0, 200))
+        title_bottom = mid_y + 20 + round(28 * ms) + 10
 
     # 内容区从这里开始往下堆叠：体验亮点 -> 住宿亮点 -> 出发地 -> 价格 -> footer
-    content_y = canvas_h - extra_h - 500 + bo
+    # 原来的content_y是完全独立算出来的（跟canvas_h、extra_h挂钩），跟标题实际画到哪
+    # 完全没关系——"标题位置"选"偏上"或"居中"的时候，中间会空出一大截。改成直接跟着
+    # 标题实际结束的位置往下留一段间距，不管用户选的是偏上/居中/偏下，内容区都会紧跟着
+    # 标题走，不会再出现两块内容互相脱节、中间空一大截的情况
+    content_y = title_bottom + round(90 * ms)
 
     def draw_section_list(heading, items, y_start, more_count=0):
         draw.text((48, y_start), heading, font=f_section_head, fill=(*ACCENT_GOLD, 255),
@@ -492,11 +501,13 @@ def build_poster_standard(manifest, bg_img, out_path):
                    stroke_width=2, stroke_fill=(0, 0, 0, 220))
         content_y += round(90 * bs)
 
-    # 价格档位（最多3档，等分排列）
+    # 价格档位（最多3档，等分排列）——之前"没有亮点/住宿/出发地内容"这种情况下，
+    # 价格会直接贴着canvas_h往上量，现在canvas_h是画图用的超大画布，不能再这样用，
+    # 改成用一个基于photo高度(1920)算出来的合理位置兜底
     if tiers:
         n = len(tiers)
         col_w = W / n
-        py = content_y if (highlights or accommodations or departure_info) else canvas_h - 500 + bo
+        py = content_y if (highlights or accommodations or departure_info) else 1420 + bo
         for i, tier in enumerate(tiers):
             cx = col_w * i + col_w / 2
             label = safe_text(tier.get("label", ""))
@@ -516,9 +527,15 @@ def build_poster_standard(manifest, bg_img, out_path):
                        font=f_price_unit, fill=(255, 255, 255, 230))
             if i > 0:
                 draw.line([(col_w * i, py - 10), (col_w * i, py + round(120 * bs))], fill=(255, 255, 255, 90), width=2)
+        content_y = py + round(150 * bs)
+    elif not (highlights or accommodations or departure_info):
+        content_y = 1420 + bo
 
-    # 底部：footer标签 + 说明文字
-    footer_y = canvas_h - 320 + bo
+    # 底部：footer标签 + 说明文字——原来是"canvas_h - 320"这种贴着画布底部的写法，
+    # 现在改成紧跟在上面内容（价格/亮点清单）后面往下走。footer_text字号也从24号
+    # 放大到30号，跟整张海报的字号比例更协调，之前显得过小
+    footer_y = content_y
+    f_footer = font([NOTO_REGULAR], max(14, round(30 * bs)))
     fx = 48
     if manifest.get("footer_tag"):
         footer_tag_text = safe_text(manifest["footer_tag"])
@@ -526,19 +543,25 @@ def build_poster_standard(manifest, bg_img, out_path):
                           fill=(*ACCENT_GOLD, 255), text_fill=(30, 30, 20, 255))
         fx = rect[2] + 16
     if manifest.get("footer_text"):
-        draw.text((fx, footer_y + 6), safe_text(manifest["footer_text"]), font=f_subtitle, fill=(255, 255, 255, 230))
+        draw.text((fx, footer_y + 6), safe_text(manifest["footer_text"]), font=f_footer, fill=(255, 255, 255, 230))
+    footer_y += round(46 * bs)
 
-    draw_phone_number(draw, manifest, f_footer, footer_y + 48)
+    draw_phone_number(draw, manifest, f_footer, footer_y)
+    if manifest.get("phone_number"):
+        footer_y += round(46 * bs)
 
-    # 联系方式图片（自定义logo/二维码截图优先，否则自动生成微信二维码）
+    # 联系方式图片（自定义logo/二维码截图优先，否则自动生成微信二维码）——位置跟着
+    # footer往下走，不再固定贴着画布底部
+    qr_y = footer_y + round(20 * bs)
     contact_img = get_contact_image(manifest, 160)
     if contact_img:
         qr_bg = Image.new("RGBA", (176, 176), (255, 255, 255, 255))
         qr_bg.paste(contact_img, (8, 8))
-        canvas.paste(qr_bg, (W - 220, canvas_h - 260), qr_bg)
+        canvas.paste(qr_bg, (W - 220, round(qr_y)), qr_bg)
+        footer_y = max(footer_y, qr_y + 176)
 
-    # 最底部装饰线（虚线+文字，呼应参考海报的点线装饰）
-    dash_y = canvas_h - 100 + bo
+    # 最底部装饰线（虚线+文字，呼应参考海报的点线装饰）——同样改成跟着上面内容走
+    dash_y = footer_y + round(50 * bs)
     dash_x = 60
     while dash_x < W - 60:
         draw.line([(dash_x, dash_y), (dash_x + 14, dash_y)], fill=(255, 255, 255, 140), width=2)
@@ -547,7 +570,12 @@ def build_poster_standard(manifest, bg_img, out_path):
     f_bottom_tag = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 30, bs, bottom_text, W - 96)
     bbox = draw.textbbox((0, 0), bottom_text, font=f_bottom_tag)
     tw = bbox[2] - bbox[0]
-    draw.text(((W - tw) / 2, canvas_h - 74 + bo), bottom_text, font=f_bottom_tag, fill=(255, 255, 255, 210))
+    bottom_y = dash_y + round(36 * bs)
+    draw.text(((W - tw) / 2, bottom_y), bottom_text, font=f_bottom_tag, fill=(255, 255, 255, 210))
+
+    final_h = max(1400, min(canvas_h, round(bottom_y + 70)))
+    if final_h < canvas_h:
+        canvas = canvas.crop((0, 0, W, final_h))
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
@@ -571,7 +599,7 @@ def build_poster_brand(manifest, bg_img, out_path):
     title_lines = textwrap.fill(safe_text(manifest.get("title") or ""), width=6).split("\n")
     f_title = fit_font_to_width([title_font_path, NOTO_BOLD], 128, ms, title_lines, W - 96)
     f_subtitle = font([NOTO_REGULAR], max(14, round(30 * ms)))
-    f_footer = fit_font_to_width([NOTO_REGULAR], 26, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
+    f_footer = fit_font_to_width([NOTO_REGULAR], 30, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
 
     y = 56 + to
     line_h = round(42 * ts)
@@ -1300,7 +1328,7 @@ def build_poster_expert_lecture(manifest, bg_img, out_path):
     f_info_item = fit_font_to_width([NOTO_BOLD], 29, ms, [safe_text(i) for i in course_info] or [""], W - 96)
     f_overview_head = font([NOTO_BLACK, NOTO_BOLD], max(14, round(32 * bs)))
     f_overview_body = font([NOTO_REGULAR], max(14, round(27 * bs)))
-    f_footer_value = font([NOTO_REGULAR], max(14, round(25 * bs)))
+    f_footer_value = font([NOTO_REGULAR], max(14, round(30 * bs)))
 
     y = 56 + to
     brand = safe_text(manifest.get("footer_tag") or "")
@@ -1394,7 +1422,7 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     draw = ImageDraw.Draw(canvas, "RGBA")
 
     f_tag = font([NOTO_BOLD], max(14, round(22 * ts)))
-    f_courses = font([NOTO_REGULAR], max(14, round(23 * ts)))
+    f_courses = font([NOTO_REGULAR], max(14, round(28 * ts)))
     f_studio_en = font([NOTO_REGULAR], max(14, round(38 * ts)))
     f_name = font([NOTO_BLACK, NOTO_BOLD], max(14, round(54 * ms)))
     f_role = font([NOTO_BOLD], max(14, round(28 * ms)))
@@ -1599,8 +1627,8 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     f_title = fit_font_to_width([NOTO_BLACK, NOTO_BOLD], 84, ms, title_lines_nf, W - 96)
     f_body = fit_font_to_width([NOTO_BOLD], 34, bs, highlights or [""], W - 140)
     f_badge_head = font([NOTO_BOLD], max(14, round(30 * bs)))
-    f_footer = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 26, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
-    f_bottom = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 26, bs, safe_text(manifest.get("bottom_tagline") or ""), W - 96)
+    f_footer = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 30, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
+    f_bottom = fit_font_to_width([NOTO_BOLD, NOTO_REGULAR], 30, bs, safe_text(manifest.get("bottom_tagline") or ""), W - 96)
 
     y = 56 + to
     masthead = safe_text(manifest.get("highlight_word") or "")
