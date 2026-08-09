@@ -550,7 +550,10 @@ def build_poster_standard(manifest, bg_img, out_path):
         fx = rect[2] + 16
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 6), safe_text(manifest["footer_text"]), font=f_footer, fill=(255, 255, 255, 230))
-    footer_y += round(46 * bs)
+    # 底部说明文字和电话号码之间的间距，之前只留了46px——30号字实际渲染出来的行高
+    # 比这个数字更高，两行字挨得太近，看着像是重叠在一起了。改成62px，留出真正
+    # 够用的行间距
+    footer_y += round(62 * bs)
 
     draw_phone_number(draw, manifest, f_footer, footer_y)
     if manifest.get("phone_number"):
