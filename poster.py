@@ -644,15 +644,18 @@ def build_poster_promo(manifest, bg_img, out_path):
     f_hero_unit = font([NOTO_BOLD], max(14, round(36 * bs)))
     f_price_label = font([NOTO_BOLD], max(14, round(24 * bs)))
     f_price = font([NOTO_BOLD], max(14, round(50 * bs)))
-    f_footer = fit_font_to_width([NOTO_REGULAR], 24, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
+    # 底部这两行（底部说明文字、电话号码）之前用的是24号字，跟海报里其它文字比起来
+    # （标题74号、价格168号）显得过小，读起来吃力。改成32号，跟标题字号比例更协调
+    f_footer = fit_font_to_width([NOTO_REGULAR], 32, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
 
     # 顶部：一行小景点清单（横排，节省空间给价格）
     if loc_line:
         draw.text((48, 56 + to), loc_line, font=f_loc, fill=(255, 255, 255, 240),
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
 
-    # 标题（比标准版小，放在价格上方）
-    title_y = 150 + mo
+    # 标题（比标准版小，放在价格上方）——之前贴着顶部景点清单只留了很小的间距，
+    # 两块内容挤在一起。往下挪到240，跟顶部清单拉开一段更舒服的距离
+    title_y = 240 + mo
     title = safe_text(manifest.get("title") or "")
     bbox = draw.textbbox((0, 0), title, font=f_title)
     tw = bbox[2] - bbox[0]
@@ -673,17 +676,20 @@ def build_poster_promo(manifest, bg_img, out_path):
         draw.text(((W - (bbox[2] - bbox[0])) / 2, hero_y), label_text, font=f_hero_label, fill=(255, 255, 255, 230))
         hero_y += round(50 * bs)
 
+        # 价格数字之前是跟"元/人"这个单位合在一起算整体居中的——"元/人"字号很小，
+        # 但只要往价格右边一挂，视觉重心就会被带偏，168号的大数字看着会比真正的
+        # 画面中线偏左一截，这也是"数字价格没有在中间"这个问题的真正原因。改成只把
+        # 价格数字本身居中，"元/人"作为小尾巴贴在居中之后的数字右边，不参与居中计算——
+        # 这样最显眼的大数字才是视觉上真正对齐画面中线的那个元素
         price_text = safe_text(str(hero.get("price", "")))
         bbox2 = draw.textbbox((0, 0), price_text, font=f_hero_price)
         price_w = bbox2[2] - bbox2[0]
+        price_x = (W - price_w) / 2
+        draw.text((price_x, hero_y), price_text, font=f_hero_price, fill=(*ACCENT_GOLD, 255),
+                   stroke_width=2, stroke_fill=(0, 0, 0, 180))
         unit_text = "元/人"
         bbox3 = draw.textbbox((0, 0), unit_text, font=f_hero_unit)
-        unit_w = bbox3[2] - bbox3[0]
-        total_w = price_w + 12 + unit_w
-        start_x = (W - total_w) / 2
-        draw.text((start_x, hero_y), price_text, font=f_hero_price, fill=(*ACCENT_GOLD, 255),
-                   stroke_width=2, stroke_fill=(0, 0, 0, 180))
-        draw.text((start_x + price_w + 12, hero_y + (bbox2[3] - bbox3[3])), unit_text,
+        draw.text((price_x + price_w + 12, hero_y + (bbox2[3] - bbox3[3])), unit_text,
                    font=f_hero_unit, fill=(255, 255, 255, 240))
         hero_y += round(210 * bs)
 
@@ -707,7 +713,7 @@ def build_poster_promo(manifest, bg_img, out_path):
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 4), safe_text(manifest["footer_text"]), font=f_footer, fill=(255, 255, 255, 220))
 
-    draw_phone_number(draw, manifest, f_footer, footer_y + 34)
+    draw_phone_number(draw, manifest, f_footer, footer_y + 44)
 
     contact_img = get_contact_image(manifest, 140)
     if contact_img:
