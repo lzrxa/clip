@@ -1514,22 +1514,16 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     overview_color_rgba = OVERVIEW_COLOR_MAP.get(manifest.get("overview_color"), (255, 255, 255, 225))
     f_overview = font([overview_font_path, NOTO_REGULAR], max(14, round(overview_font_size * bs)))
 
-    # 画布高度按内容动态撑高——这个版式经常是纯文字堆出来的长内容，固定1920很容易不够用
-    extra_h = 0
-    if highlights:
-        extra_h += 40 + len(highlights) * 100  # 正文行数多、字号又比其它版式大，预留得更宽松
-    if badge_text:
-        extra_h += 160
-    if overview_text:
-        # 详细说明是一整段话，按实际字体+字号量出真实换行结果来估计算行数——不能只按
-        # "有没有填"简单加一个固定值，也不能用固定字符数估算（字号一变，字符数对应的
-        # 实际宽度就变了，估算跟实际渲染对不上，容易导致画布留白不够或者留太多）。
-        # 换行宽度要跟实际渲染那步用同一个值（W-144，留了卡片内边距的空间），
-        # 每行预留的高度也要把新加的行距(22)算进去，不然估的还是旧版更紧凑的排版
-        estimated_lines = len(wrap_text_by_pixel_width(overview_text, f_overview, W - 144).split("\n"))
-        extra_h += 50 + 38 + 56 + estimated_lines * round(62 * overview_font_size / 32)  # 分隔线+卡片内边距+分段间距都算进去
-    extra_h = int(extra_h * max(ms, bs, 1.0) * 1.1)
-    canvas_h = min(max(1920, 900 + extra_h), 4200)
+    # 画布高度：以前是靠预估公式（数标题字数、数几条要点、算详细说明能换几行……）拼凑出
+    # 一个高度，测试下来发现这套估算比实际渲染出来的内容高出一大截——比如某次实测，
+    # 实际内容画到一半就结束了，预估却按接近两倍的高度留了画布，底部整整空出一大块，
+    # 上面的内容反而显得挤在一起，很不"设计感"。公式估得越准就越复杂、越难维护，
+    # 而且换字体、换字号、换配色这些都可能让实际渲染结果跟估算公式脱节。
+    # 这次改成更直接、更不会出错的做法：先在一块管够用的高画布上把所有内容正常画一遍，
+    # 画的过程中用y变量实时记录"画到哪了"，画完之后已经确切知道内容真实占了多高，
+    # 不用再猜——直接按这个真实高度收尾裁剪画布，页脚也贴着内容真实结束的地方摆，
+    # 不会再出现"一半是内容一半是空白"这种比例失调的情况
+    canvas_h = 4200
 
     canvas = Image.new("RGBA", (W, canvas_h), BG)
     if bg_img:
@@ -1591,7 +1585,11 @@ def build_poster_newsflash(manifest, bg_img, out_path):
 
     for item in highlights:
         icon_r = round(20 * bs)
-        draw_warning_triangle(draw, 68, y + icon_r, icon_r, (*GOLD, 255), DARK)
+        # 之前这里用的是警示三角图标（感叹号那种），本来是想借用"划重点"的既视感，但
+        # 警示/警告类图标天然带着"要小心""有问题"的暗示，跟"重大喜讯""周年庆"这类
+        # 报喜报好消息的内容调性完全对不上，看着别扭。换成星星图标——跟"惊喜权益"那个
+        # 场景是同一个图标，喜庆感更贴合，也不会让人下意识以为是什么警告提示
+        draw_star_icon(draw, 68, y + icon_r, icon_r, (*GOLD, 255), DARK)
         wrapped_item = textwrap.fill(item, width=22)
         draw.multiline_text((104, y), wrapped_item, font=f_body, fill=(255, 255, 255, 245),
                              stroke_width=2, stroke_fill=(0, 0, 0, 200), spacing=10)
@@ -1629,11 +1627,10 @@ def build_poster_newsflash(manifest, bg_img, out_path):
 
     y += round(20 * bs) + bo
 
-    # 底部这一整块（联系方式引导条 + 二维码 + 最底部小标语）统一贴着画布最下方摆放，
-    # 不管上面标题/要点内容占了多少——测试的时候发现，内容比较短的情况下，如果联系方式
-    # 紧跟着正文往下排、二维码却单独贴在画布最底部，中间会空出一大截、两边视觉上脱节。
-    # 改成整个footer作为一个整体贴底摆放；如果正文实在太长、贴底位置已经顶到正文下面去了，
-    # 就退回跟着正文继续往下走，不会真的跟内容重叠
+    # 底部这一整块（联系方式引导条 + 二维码 + 最底部小标语）紧跟在正文内容后面，留一段
+    # 固定的呼吸间距——以前是让footer去"贴着画布最下方"，那是在画布高度等于最终高度的
+    # 前提下才成立的逻辑；现在画布最终高度是画完以后再裁出来的，"贴底"这个概念不再适用，
+    # 直接在内容结束的位置往下留白就行，不用再去猜画布多高
     footer_tag = safe_text(manifest.get("footer_tag") or "")
     footer_text = safe_text(manifest.get("footer_text") or "")
     bottom_tagline = safe_text(manifest.get("bottom_tagline") or "")
@@ -1647,7 +1644,7 @@ def build_poster_newsflash(manifest, bg_img, out_path):
     if bottom_tagline:
         footer_block_h += round(60 * bs)
 
-    footer_y = max(y, canvas_h - 40 - footer_block_h)
+    footer_y = y + round(56 * bs)
 
     if contact_img:
         qr_size = 166
@@ -1677,6 +1674,15 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         bbox = draw.textbbox((0, 0), bottom_tagline, font=f_bottom)
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, footer_y + 10), bottom_tagline, font=f_bottom, fill=(255, 255, 255, 210))
+        footer_y += round(60 * bs)
+
+    # 内容真实画到哪，画布就收到哪——footer_y这时候已经是页脚（含底部小标语，如果有的话）
+    # 实际画完之后的y坐标，直接拿来当最终高度的依据，不用再回头对照之前预估的那个数字；
+    # 留了40px的底边距，1920是给内容本来就短的情况兜底的最小高度，不会缩得比常规海报
+    # 比例还小
+    final_h = max(1200, min(canvas_h, round(footer_y + 40)))
+    if final_h < canvas_h:
+        canvas = canvas.crop((0, 0, W, final_h))
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
