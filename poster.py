@@ -42,6 +42,12 @@ TITLE_FONT_MAP = {
 }
 
 TITLE_POSITION_RATIO = {"top": 0.20, "middle": 0.42, "bottom": 0.62}
+# "纯大字风光版"专用的位置比例——前端"标题位置"这个下拉框，不管用户有没有手动选过，
+# 一直都会明确传"middle"这个值过来（表单默认就选中这一项），所以用户反馈"大字太靠中间"
+# 这个问题，改的不能是"manifest没传title_position时的兜底默认值"（那个分支实际上永远
+# 不会走到），得单独给这个版式配一套自己的位置比例，跟标准版共用的那套（TITLE_POSITION_
+# RATIO）分开，不然改"居中"这一档会连标准版也一起带偏，用户没反馈标准版有这个问题
+BRAND_TITLE_POSITION_RATIO = {"top": 0.18, "middle": 0.34, "bottom": 0.62}
 
 # 色彩风格：每套配色定义5个角色——dark（深色块背景，比如标题条/CTA区）、mid（次要强调色，
 # 比如图标/副标题）、bg（页面浅色底）、hilight（高亮强调色，比如banner/加码送这类"划重点"
@@ -608,7 +614,7 @@ def build_poster_brand(manifest, bg_img, out_path):
                    stroke_width=2, stroke_fill=(0, 0, 0, 200))
         y += line_h
 
-    title_ratio = TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.46)
+    title_ratio = BRAND_TITLE_POSITION_RATIO.get(manifest.get("title_position"), 0.34)
     mid_y = int(H * title_ratio) + mo
     if manifest.get("highlight_word"):
         f_tagfont = f_tag
