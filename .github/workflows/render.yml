@@ -31,12 +31,16 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji
           pip install --quiet edge-tts requests boto3 Pillow
 
-      - name: 下载字幕艺术字体（站酷快乐体+站酷庆科黄油体，Google Fonts官方OFL开源协议分发，
-          免费商用，站酷快乐体跟海报标题用的是同一份字体）
+      - name: 下载字幕艺术字体（Google Fonts官方OFL开源协议分发，免费商用）
         run: |
           mkdir -p fonts
           curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
           curl -sL --fail -o fonts/ZCOOLQingKeHuangYou-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
+          curl -sL --fail -o fonts/ZCOOLXiaoWei-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf"
+          curl -sL --fail -o fonts/MaShanZheng-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf"
+          curl -sL --fail -o fonts/ZhiMangXing-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf"
+          curl -sL --fail -o fonts/LongCang-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf"
+          curl -sL --fail -o fonts/LiuJianMaoCao-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf"
 
       - name: 执行渲染
         env:
