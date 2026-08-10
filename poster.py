@@ -6,7 +6,7 @@ from io import BytesIO
 import requests
 import boto3
 from botocore.config import Config
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 try:
     import qrcode
@@ -1958,6 +1958,15 @@ def main():
             bg_img = None
     else:
         bg_img = get_background(manifest)
+
+    # 朦胧背景：给背景图做一层高斯模糊，把照片里细碎的纹理/边缘"揉"掉，文字压在上面
+    # 会更突出、更好读——跟直接压深色遮罩比，模糊处理保留了照片本身的色彩和大致轮廓，
+    # 只是不再抢镜，两种手法可以叠加用（模糊完該有的遮罩还是照常会加）。三档强度对应
+    # 不同的模糊半径，照片本身内容越"碎"（人多、背景杂），建议选强一点的档位
+    BLUR_RADIUS_MAP = {"light": 8, "medium": 18, "heavy": 32}
+    blur_level = manifest.get("background_blur")
+    if bg_img is not None and blur_level in BLUR_RADIUS_MAP:
+        bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS_MAP[blur_level]))
 
     out_path = f"{WORKDIR}/poster.jpg"
     build_poster(manifest, bg_img, out_path)
