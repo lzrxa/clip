@@ -31,6 +31,12 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji
           pip install --quiet edge-tts requests boto3 Pillow
 
+      - name: 安装"AI营销工厂"阶段新增的可选依赖（节拍检测用numpy、自定义配音转字幕用
+          faster-whisper）——这两个功能代码本身有优雅降级（装不上会跳过对应功能，不会
+          让整个渲染失败），但装上才能真正用上这两个功能，不是摆设
+        run: |
+          pip install --quiet -r requirements-stage2.txt || echo "可选依赖安装失败，节拍同步/自定义配音转字幕这两个功能会被跳过，其余功能不受影响"
+
       - name: 下载字幕艺术字体（Google Fonts官方OFL开源协议分发，免费商用）
         run: |
           mkdir -p fonts
