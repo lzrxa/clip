@@ -31,6 +31,14 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji
           pip install --quiet edge-tts requests boto3 Pillow
 
+      - name: 缓存 Whisper 模型
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ runner.os }}-${{ hashFiles('requirements-stage2.txt') }}-small
+          restore-keys: |
+            whisper-${{ runner.os }}-
+
       - name: 安装"AI营销工厂"阶段新增的可选依赖（节拍检测用numpy、自定义配音转字幕用
           faster-whisper）——这两个功能代码本身有优雅降级（装不上会跳过对应功能，不会
           让整个渲染失败），但装上才能真正用上这两个功能，不是摆设
