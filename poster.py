@@ -1961,11 +1961,24 @@ def main():
 
     # 朦胧背景：给背景图做一层高斯模糊，把照片里细碎的纹理/边缘"揉"掉，文字压在上面
     # 会更突出、更好读——跟直接压深色遮罩比，模糊处理保留了照片本身的色彩和大致轮廓，
-    # 只是不再抢镜，两种手法可以叠加用（模糊完該有的遮罩还是照常会加）。三档强度对应
-    # 不同的模糊半径，照片本身内容越"碎"（人多、背景杂），建议选强一点的档位
-    BLUR_RADIUS_MAP = {"light": 8, "medium": 18, "heavy": 32}
+    # 只是不再抢镜，两种手法可以叠加用（模糊完該有的遮罩还是照常会加）。
+    #
+    # 这几个模糊半径最早是拿抽象的大色块圆圈测出来的，看着还行，但真实拿建筑照片这种
+    # 密集细节（窗户网格、招牌文字）一测，同样的半径直接把文字糊成完全认不出来了——
+    # 之前"轻度"实际上已经比预想的重出好几倍。这次改用真实文字+密集网格重新测过一遍，
+    # 三档强度大幅调低，"轻度"现在只是让边缘略微柔和一点，文字和细节还清晰可辨。
+    #
+    # 另外还有个坑：这一步是在background图片原始分辨率上做的，用户传的照片分辨率
+    # 五花八门（手机拍的照片常见3000px+宽），如果照片本身分辨率远大于海报画布(1080px)，
+    # 同样的模糊半径在缩小到画布尺寸之后，效果会被"稀释"变淡，导致同一档强度在不同
+    # 照片上观感不一致。这里先把图片按比例缩到画布宽度附近再模糊，模糊力度就不再受
+    # 原始照片分辨率影响，每一档选出来的效果是稳定、可预期的
+    BLUR_RADIUS_MAP = {"light": 2, "medium": 4, "heavy": 9}
     blur_level = manifest.get("background_blur")
     if bg_img is not None and blur_level in BLUR_RADIUS_MAP:
+        if bg_img.width > W * 1.15:
+            norm_h = round(bg_img.height * (W / bg_img.width))
+            bg_img = bg_img.resize((W, norm_h), Image.LANCZOS)
         bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS_MAP[blur_level]))
 
     out_path = f"{WORKDIR}/poster.jpg"

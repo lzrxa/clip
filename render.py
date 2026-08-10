@@ -2,7 +2,14 @@ import os
 import re
 import subprocess
 import sys
+import wave
 import requests
+from PIL import Image, ImageStat
+
+try:
+    import numpy as np
+except Exception:
+    np = None
 import boto3
 from botocore.config import Config
 
@@ -582,6 +589,75 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
 # ==================== 字幕生成函数结束 ====================
 
 
+def detect_rhythm_beats(audio_path, workdir, max_beats=160):
+    """轻量级节奏点检测：不依赖librosa，使用短时能量峰值估计重拍位置。"""
+    wav_path=os.path.join(workdir,"bgm_rhythm.wav")
+    try:
+        if np is None: return []
+        run(["ffmpeg","-y","-i",audio_path,"-ac","1","-ar","22050","-sample_fmt","s16",wav_path])
+        with wave.open(wav_path,"rb") as wf:
+            rate=wf.getframerate(); raw=wf.readframes(wf.getnframes())
+        samples=np.frombuffer(raw,dtype=np.int16).astype(np.float32)/32768.0
+        if len(samples)<rate: return []
+        hop=int(rate*0.05); frame=int(rate*0.10)
+        e=[]; times=[]
+        for start in range(0,len(samples)-frame,hop):
+            c=samples[start:start+frame]; e.append(float(np.sqrt(np.mean(c*c)))); times.append(start/rate)
+        e=np.asarray(e,dtype=np.float32)
+        if len(e)<8: return []
+        smooth=np.convolve(e,np.ones(9,dtype=np.float32)/9,mode='same')
+        flux=np.maximum(e-smooth,0)
+        threshold=max(float(np.percentile(flux,72)),float(np.mean(flux)+0.35*np.std(flux)))
+        peaks=[]; last=-999
+        for i in range(1,len(flux)-1):
+            if flux[i]>=threshold and flux[i]>=flux[i-1] and flux[i]>=flux[i+1]:
+                t=times[i]
+                if t-last>=0.28: peaks.append(t); last=t
+        return peaks[:max_beats]
+    except Exception as e:
+        print("节奏点分析失败，回退普通镜头节奏：",e); return []
+
+
+def align_durations_to_beats(durations, beats, total_duration, min_duration=1.5):
+    if not beats or len(durations)<2 or total_duration<5: return durations
+    n=len(durations); planned=[]; cur=0.0
+    for d in durations: cur+=float(d); planned.append(cur)
+    beats=[b for b in beats if min_duration<=b<=total_duration-min_duration]
+    out=[]; prev=0.0
+    for idx,target in enumerate(planned[:-1]):
+        remain=n-idx-1; low=prev+min_duration; high=total_duration-remain*min_duration
+        c=[b for b in beats if low<=b<=high]
+        if c:
+            b=min(c,key=lambda x:abs(x-target))
+            if abs(b-target)<=0.85: target=b
+        out.append(target-prev); prev=target
+    out.append(total_duration-prev)
+    if any(d<0.9 for d in out): return durations
+    return [round(d*total_duration/sum(out),3) for d in out]
+
+
+def sec_to_srt_time(sec):
+    sec=max(0,float(sec)); whole=int(sec); ms=int(round((sec-whole)*1000))
+    if ms>=1000: whole+=1; ms=0
+    return f"{whole//3600:02d}:{(whole%3600)//60:02d}:{whole%60:02d},{ms:03d}"
+
+
+def transcribe_custom_voice_to_srt(audio_path,out_path):
+    try:
+        from faster_whisper import WhisperModel
+        model=WhisperModel(os.environ.get("WHISPER_MODEL","small"),device=os.environ.get("WHISPER_DEVICE","cpu"),compute_type=os.environ.get("WHISPER_COMPUTE_TYPE","int8"))
+        segments,_=model.transcribe(audio_path,language="zh",beam_size=5,vad_filter=True)
+        lines=[]
+        for i,seg in enumerate(segments,1):
+            text=(seg.text or '').strip()
+            if text: lines.append(f"{i}\n{sec_to_srt_time(seg.start)} --> {sec_to_srt_time(seg.end)}\n{text}\n")
+        if not lines: return False
+        with open(out_path,'w',encoding='utf-8') as f: f.write('\n'.join(lines))
+        return True
+    except Exception as e:
+        print("自定义配音ASR不可用，退回基础字幕：",e); return False
+
+
 def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
     """生成单个镜头的标准化片段（尺寸跟着canvas_w/canvas_h走，默认还是原来的竖屏1080x1920）。
     图片素材加 Ken Burns 缓慢缩放效果，避免死画面。"""
@@ -628,6 +704,67 @@ def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
             "-pix_fmt", "yuv420p", clip_path,
         ])
     return clip_path
+
+
+
+def build_transitioned_video(clip_paths, durations, out_path, style="fade", transition_duration=0.35):
+    """把无音频镜头做成轻量转场。失败时调用方回退到concat，保证渲染稳定。"""
+    if style == "none" or len(clip_paths) < 2:
+        return False
+    d = min(max(float(transition_duration), 0.15), 0.6)
+    if any(float(x) <= d + 0.05 for x in durations):
+        return False
+    transition_map = {"fade": "fade", "smoothleft": "smoothleft", "smoothup": "smoothup"}
+    trans = transition_map.get(style, "fade")
+    inputs=[]
+    for pth in clip_paths:
+        inputs += ["-i", pth]
+    filters=[]
+    current="0:v"
+    cumulative=float(durations[0])
+    for i in range(1,len(clip_paths)):
+        offset=max(0.0,cumulative-d)
+        out=f"v{i}"
+        filters.append(f"[{current}][{i}:v]xfade=transition={trans}:duration={d}:offset={offset:.3f}[{out}]")
+        current=out
+        cumulative += float(durations[i])-d
+    cmd=["ffmpeg","-y",*inputs,"-filter_complex",";".join(filters),"-map",f"[{current}]","-an","-c:v","libx264","-preset","veryfast","-crf","20","-pix_fmt","yuv420p",out_path]
+    run(cmd)
+    return True
+
+
+def strengthen_hook(input_path, output_path, duration_sec=3.0):
+    """前3秒做非常轻的推近+对比增强，不改变素材内容。"""
+    d=max(0.8,min(float(duration_sec),3.5))
+    vf=(f"scale=iw*1.025:ih*1.025,crop=iw/1.025:ih/1.025:(in_w-out_w)/2:(in_h-out_h)/2," 
+        f"eq=contrast=1.05:saturation=1.04:enable='lt(t,{d:.2f})'")
+    run(["ffmpeg","-y","-i",input_path,"-vf",vf,"-c:v","libx264","-preset","veryfast","-crf","20","-c:a","copy",output_path])
+
+
+def score_cover_image(path):
+    """轻量视觉评分：清晰度、对比度、色彩丰富度和不过曝/欠曝。"""
+    try:
+        im=Image.open(path).convert("RGB").resize((320,568))
+        import numpy as _np
+        a=_np.asarray(im).astype("float32")
+        gray=0.299*a[:,:,0]+0.587*a[:,:,1]+0.114*a[:,:,2]
+        contrast=float(gray.std())
+        # 拉普拉斯近似清晰度，避免引入opencv
+        lap=_np.abs(_np.diff(gray,axis=0)).mean()+_np.abs(_np.diff(gray,axis=1)).mean()
+        saturation=float((a.max(axis=2)-a.min(axis=2)).mean())
+        mean=float(gray.mean())
+        exposure=max(0.0,1.0-abs(mean-128.0)/128.0)
+        score=contrast*0.35+lap*1.8+saturation*0.18+exposure*25
+        return round(score,3)
+    except Exception as e:
+        print("封面评分失败:",e)
+        return 0.0
+
+
+def choose_best_cover(candidates):
+    if not candidates: return None
+    ranked=sorted(candidates,key=lambda x:x.get("score",0),reverse=True)
+    return ranked[0]
 
 
 def main():
@@ -728,6 +865,18 @@ def main():
     except (TypeError, ValueError):
         no_voice_font_size = 52
 
+    beat_sync = bool(manifest.get("beat_sync", True))
+    custom_voice_asr = bool(manifest.get("custom_voice_asr", True))
+    try: cover_count=min(max(int(manifest.get("cover_count") or 3),1),3)
+    except (TypeError,ValueError): cover_count=3
+    cover_style=manifest.get("cover_style") or "auto"
+    transition_style=manifest.get("transition_style") or "fade"
+    try: transition_duration=min(max(float(manifest.get("transition_duration") or 0.35),0.15),0.6)
+    except (TypeError,ValueError): transition_duration=0.35
+    audio_ducking=bool(manifest.get("audio_ducking",True))
+    hook_emphasis=bool(manifest.get("hook_emphasis",True))
+    smart_cover=bool(manifest.get("smart_cover",True))
+
     # 视频水印/Logo：/api/render-manifest那边已经把enable_watermark和watermark_url
     # 绑在一起判断过了（水印素材文件真的存在才会是true），这里直接信任这个结果，
     # 不用再额外判断watermark_url是不是空
@@ -786,6 +935,13 @@ def main():
         audio_duration = float(probe.stdout.strip())
         planned_total = sum(float(s["duration_sec"]) for s in shots)
         scale = audio_duration / planned_total if planned_total > 0 else 1.0
+        if custom_voice_asr:
+            asr_srt=f"{WORKDIR}/custom_voice.srt"
+            if transcribe_custom_voice_to_srt(audio_path,asr_srt):
+                srt_path=asr_srt
+                print("自定义配音ASR字幕生成成功，将使用真实时间轴")
+            else:
+                print("自定义配音ASR未生成字幕，继续使用整段字幕兜底")
         print(f"使用自定义配音文件，时长 {audio_duration:.2f}s，分镜计划总时长 {planned_total:.2f}s，缩放系数 {scale:.3f}")
     else:
         audio_path = f"{WORKDIR}/audio.mp3"
@@ -812,11 +968,26 @@ def main():
     # 不用再各自判断走哪条路
     mix_target_duration = audio_duration if audio_duration is not None else total_video_duration
 
-    # 3. 逐镜头生成竖屏分段（图片自动加 Ken Burns 缓慢缩放）
-    clip_paths = []
+    # 2.5 V3.0第二阶段：预分析BGM节奏，后面混音复用同一个下载文件
+    bgm_src_path=None; rhythm_beats=[]
+    if beat_sync and bgm_url:
+        try:
+            bgm_src_path=f"{WORKDIR}/bgm_src.mp3"
+            r=requests.get(bgm_url,timeout=60); r.raise_for_status()
+            with open(bgm_src_path,"wb") as f: f.write(r.content)
+            rhythm_beats=detect_rhythm_beats(bgm_src_path,WORKDIR)
+            print(f"检测到 {len(rhythm_beats)} 个节奏点")
+        except Exception as e:
+            print("预分析BGM失败，回退普通节奏：",e); bgm_src_path=None; rhythm_beats=[]
+
+    # 3. 逐镜头生成标准化分段；节拍同步只改变视觉镜头边界，不改变整条配音字幕时间轴。
+    planned_durations=[max(1.0,float(shot["duration_sec"])*scale) for shot in shots]
+    if beat_sync and rhythm_beats:
+        planned_durations=align_durations_to_beats(planned_durations,rhythm_beats,sum(planned_durations))
+        print("节拍同步后的镜头时长：",[round(x,2) for x in planned_durations])
+    clip_paths=[]
     for i, shot in enumerate(shots):
-        duration = max(1.0, float(shot["duration_sec"]) * scale)
-        clip_paths.append(make_shot_clip(i, shot, duration, canvas_w=CANVAS_W, canvas_h=CANVAS_H))
+        clip_paths.append(make_shot_clip(i, shot, planned_durations[i], canvas_w=CANVAS_W, canvas_h=CANVAS_H))
 
     clip_list_path = f"{WORKDIR}/concat_list.txt"
     with open(clip_list_path, "w") as f:
@@ -824,15 +995,34 @@ def main():
             f.write(f"file '{os.path.abspath(p)}'\n")
 
     concat_path = f"{WORKDIR}/concat.mp4"
-    run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", clip_list_path,
-        "-c", "copy", concat_path,
-    ])
+    used_transition=False
+    if transition_style != "none":
+        try:
+            used_transition=build_transitioned_video(clip_paths, planned_durations, concat_path, transition_style, transition_duration)
+            print(f"专业转场：{transition_style} / {transition_duration:.2f}s / 成功={used_transition}")
+        except Exception as e:
+            print("转场渲染失败，自动回退无转场：",e)
+            used_transition=False
+    if not used_transition:
+        run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", clip_list_path,
+            "-c", "copy", concat_path,
+        ])
+
+    # V3.0第三阶段：黄金开头强化。只处理视频前几秒，失败则保留原片。
+    if hook_emphasis and len(clip_paths) > 0:
+        try:
+            hook_path=f"{WORKDIR}/hook_enhanced.mp4"
+            strengthen_hook(concat_path,hook_path,3.0)
+            concat_path=hook_path
+            print("黄金开头强化完成")
+        except Exception as e:
+            print("黄金开头强化失败，跳过：",e)
 
     # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
-    if no_voice_mode or use_custom_voice:
-        # "纯风光+音乐"模式、以及"自定义配音"模式，都没有真实的语音时间轴（前者压根没配音，
+    if no_voice_mode or (use_custom_voice and not srt_path):
+        # "纯风光+音乐"模式，或自定义配音ASR不可用时，都没有真实的语音时间轴（前者压根没配音，
         # 后者虽然有配音但那是用户自己录的，没法反推逐字时间轴），没法走逐句同步字幕这条路。
         # 直接把每个镜头的解说词原文，当成一块从头到尾持续展示的多行字幕——复用底部字幕
         # （build_bottom_caption_ass）这条已经验证过的多行渲染逻辑，不用另外写一套渲染代码。
@@ -1038,15 +1228,16 @@ def main():
     bgm_ready_path = None
     if bgm_url:
         try:
-            bgm_src_path = f"{WORKDIR}/bgm_src.mp3"
-            r = requests.get(bgm_url, timeout=60)
-            r.raise_for_status()
-            with open(bgm_src_path, "wb") as f:
-                f.write(r.content)
+            if not bgm_src_path:
+                bgm_src_path = f"{WORKDIR}/bgm_src.mp3"
+                r = requests.get(bgm_url, timeout=60)
+                r.raise_for_status()
+                with open(bgm_src_path, "wb") as f:
+                    f.write(r.content)
             bgm_ready_path = f"{WORKDIR}/bgm.mp3"
             run([
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", bgm_src_path,
-                "-t", str(mix_target_duration), "-af", f"volume={bgm_volume}",
+                "-t", str(mix_target_duration),
                 bgm_ready_path,
             ])
         except Exception as e:
@@ -1063,17 +1254,30 @@ def main():
         if bgm_ready_path:
             run([
                 "ffmpeg", "-y", "-i", subtitled_path, "-i", bgm_ready_path,
-                "-map", "0:v", "-map", "1:a",
+                "-filter_complex", f"[1:a]volume={bgm_volume}[bgm_out]",
+                "-map", "0:v", "-map", "[bgm_out]",
                 "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
             ])
         else:
             run(["ffmpeg", "-y", "-i", subtitled_path, "-c", "copy", final_path])
     elif bgm_ready_path:
+        if audio_ducking:
+            # BGM作为被闪避轨，人声作为侧链控制：说话时BGM自动降低，停顿时自然回升。
+            duck_filter=(
+                f"[1:a]volume={voice_volume}[voice_adj];"
+                f"[2:a]volume=1.0[bgm_base];"
+                "[bgm_base][voice_adj]sidechaincompress=threshold=0.035:ratio=8:attack=18:release=320:makeup=1[bgm_ducked];"
+                "[voice_adj][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
+        else:
+            duck_filter=(
+                f"[1:a]volume={voice_volume}[voice_adj];"
+                f"[2:a]volume={bgm_volume}[bgm_adj];"
+                "[voice_adj][bgm_adj]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
         run([
             "ffmpeg", "-y", "-i", subtitled_path, "-i", audio_path, "-i", bgm_ready_path,
-            "-filter_complex",
-            f"[1:a]volume={voice_volume}[voice_adj];"
-            "[voice_adj][2:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            "-filter_complex", duck_filter,
             "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
         ])
@@ -1091,22 +1295,55 @@ def main():
     s3.upload_file(final_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
     video_url = f"{R2_PUBLIC_BASE_URL}/{video_key}"
 
-    # 8.5 顺手截一帧做封面图（不叠加标题文字，就是单纯的画面截图，缩小到480宽）。
-    # 这张小图会被网页用作<video>标签的poster属性：任务流水线一打开，先加载的是这张几十KB的
-    # 小图，不用把每个视频开头那段数据都提前拉下来才能看到画面；真正的视频数据要等用户
-    # 点了播放才开始下载，首页打开的速度和省流量效果都会好很多。截图失败不影响视频本身。
-    cover_url = None
+    # 8.5 V3.0第三阶段：智能多封面候选 + 自动优选
+    cover_url=None; cover_options=[]
     try:
-        cover_path = f"{WORKDIR}/cover.jpg"
-        run(["ffmpeg", "-y", "-ss", "0.8", "-i", final_path, "-frames:v", "1", "-vf", "scale=480:-1", cover_path])
-        cover_key = f"videos/{TASK_ID}_cover.jpg"
-        s3.upload_file(cover_path, R2_BUCKET_NAME, cover_key, ExtraArgs={"ContentType": "image/jpeg"})
-        cover_url = f"{R2_PUBLIC_BASE_URL}/{cover_key}"
+        cover_titles=manifest.get("cover_titles") or []
+        title=str(cover_titles[0]).strip() if cover_titles else "精彩瞬间"
+        title=title[:18]
+        style=cover_style if cover_style in {"clean","cinematic","sales"} else "clean"
+        # 多取几个候选，再由视觉评分选择最佳默认封面；最终仍只上传用户设定数量。
+        sample_count=max(3,cover_count+2)
+        positions=[]
+        for j in range(sample_count):
+            ratio=(j+1)/(sample_count+1)
+            positions.append(max(0.6,min(mix_target_duration-0.3,mix_target_duration*ratio)))
+        ranked=[]
+        for idx,pos in enumerate(positions,1):
+            cover_path=f"{WORKDIR}/cover_candidate_{idx}.jpg"
+            safe=title.replace("\\","").replace("'","").replace(":","\\:").replace("%","")
+            if style=="sales":
+                vf=f"scale=480:854:force_original_aspect_ratio=increase,crop=480:854,drawbox=x=0:y=650:w=480:h=204:color=black@0.62:t=fill,drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text='{safe}':fontcolor=white:fontsize=42:x=24:y=684:shadowcolor=black@0.7:shadowx=2:shadowy=2"
+            elif style=="cinematic":
+                vf=f"scale=480:854:force_original_aspect_ratio=increase,crop=480:854,drawbox=x=0:y=0:w=480:h=150:color=black@0.28:t=fill,drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text='{safe}':fontcolor=white:fontsize=38:x=24:y=48:shadowcolor=black@0.7:shadowx=2:shadowy=2"
+            else:
+                vf=f"scale=480:854:force_original_aspect_ratio=increase,crop=480:854,drawbox=x=0:y=670:w=480:h=184:color=black@0.45:t=fill,drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text='{safe}':fontcolor=white:fontsize=40:x=24:y=712:shadowcolor=black@0.65:shadowx=2:shadowy=2"
+            run(["ffmpeg","-y","-ss",str(pos),"-i",final_path,"-frames:v","1","-vf",vf,cover_path])
+            score=score_cover_image(cover_path) if smart_cover else 0.0
+            ranked.append({"path":cover_path,"score":score,"position":round(pos,2)})
+        if smart_cover:
+            ranked=sorted(ranked,key=lambda x:x["score"],reverse=True)
+        selected=ranked[:cover_count]
+        # 对外展示按“方案1/2/3”稳定编号，但默认封面是评分最高的那一张。
+        for idx,item in enumerate(selected,1):
+            key=f"videos/{TASK_ID}_cover_{idx}.jpg"
+            s3.upload_file(item["path"],R2_BUCKET_NAME,key,ExtraArgs={"ContentType":"image/jpeg"})
+            url=f"{R2_PUBLIC_BASE_URL}/{key}"
+            cover_options.append({"title":f"封面方案{idx}","url":url,"score":item.get("score",0)})
+        if cover_options:
+            cover_url=cover_options[0]["url"]
+            print("智能封面评分：",[x.get("score") for x in cover_options])
     except Exception as e:
-        print("封面截图失败，跳过（不影响视频本身）：", e)
+        print("智能封面生成失败，回退普通封面：",e)
+        try:
+            cover_path=f"{WORKDIR}/cover.jpg"
+            run(["ffmpeg","-y","-ss","0.8","-i",final_path,"-frames:v","1","-vf","scale=480:-1",cover_path])
+            key=f"videos/{TASK_ID}_cover.jpg"; s3.upload_file(cover_path,R2_BUCKET_NAME,key,ExtraArgs={"ContentType":"image/jpeg"})
+            cover_url=f"{R2_PUBLIC_BASE_URL}/{key}"
+        except Exception:
+            pass
 
-    # 9. 通知 Cloudflare 渲染完成
-    callback("succeeded", video_url=video_url, cover_url=cover_url)
+    callback("succeeded", video_url=video_url, cover_url=cover_url, cover_options=cover_options)
     print("完成，视频地址:", video_url)
 
 
