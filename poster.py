@@ -329,13 +329,17 @@ def get_contact_image(manifest, size):
     return None
 
 
-def draw_phone_number(draw, manifest, font, y_from_bottom):
-    """在底部画电话号码，位置在footer行下方，不与二维码重叠"""
+def draw_phone_number(draw, manifest, bs, y_from_bottom):
+    """在底部画电话号码，位置在footer行下方，不与二维码重叠。字体单独用粗体、
+    单独定一个字号——之前是直接借用footer_text那个常规粗细的字体，电话号码这种
+    "要一眼看清楚、可能要照着拨打"的信息，跟旁边"体验亮点""独家定制"这些加粗大字
+    比起来显得又细又小，不够协调。改成粗体+32号，跟周围元素的分量更对称"""
     phone = manifest.get("phone_number")
     if not phone:
         return
     text = f"电话：{safe_text(phone)}"
-    draw.text((48, y_from_bottom), text, font=font, fill=(255, 255, 255, 230),
+    phone_font = font([NOTO_BOLD], max(14, round(32 * bs)))
+    draw.text((48, y_from_bottom), text, font=phone_font, fill=(255, 255, 255, 235),
                stroke_width=1, stroke_fill=(0, 0, 0, 180))
 
 
@@ -555,7 +559,7 @@ def build_poster_standard(manifest, bg_img, out_path):
     # 够用的行间距
     footer_y += round(62 * bs)
 
-    draw_phone_number(draw, manifest, f_footer, footer_y)
+    draw_phone_number(draw, manifest, bs, footer_y)
     if manifest.get("phone_number"):
         footer_y += round(46 * bs)
 
@@ -648,7 +652,7 @@ def build_poster_brand(manifest, bg_img, out_path):
         tw = bbox[2] - bbox[0]
         draw.text(((W - tw) / 2, H - 140 + bo), footer_text, font=f_footer, fill=(255, 255, 255, 220))
 
-    draw_phone_number(draw, manifest, f_footer, H - 105 + bo)
+    draw_phone_number(draw, manifest, bs, H - 105 + bo)
 
     contact_img = get_contact_image(manifest, 150)
     if contact_img:
@@ -750,7 +754,7 @@ def build_poster_promo(manifest, bg_img, out_path):
     if manifest.get("footer_text"):
         draw.text((fx, footer_y + 4), safe_text(manifest["footer_text"]), font=f_footer, fill=(255, 255, 255, 220))
 
-    draw_phone_number(draw, manifest, f_footer, footer_y + 44)
+    draw_phone_number(draw, manifest, bs, footer_y + 44)
 
     contact_img = get_contact_image(manifest, 140)
     if contact_img:
