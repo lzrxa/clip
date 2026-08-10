@@ -40,6 +40,36 @@ ARTISTIC_FONT = "fonts/ZCOOLKuaiLe-Regular.ttf"  # 站酷快乐体，海报标�
 # 不是"圆润可爱"那种活泼调性。专门给"诗意品牌版"这个新版式用，追求的是海报大片、
 # 情绪文案那种克制、有质感的效果，不是热闹的宣传物料
 POETIC_FONT = "fonts/ZCOOLXiaoWei-Regular.ttf"
+# "诗意品牌版"专用的字体库——除了默认这个站酷小薇体，另外找了4款Google Fonts官方
+# OFL开源协议分发、免费商用的中文书法/手写风格字体，风格各不相同，用户可以自己选，
+# 也可以让系统按标题文字的字面意思自动挑一款贴合的
+POETIC_FONT_MAP = {
+    "xiaowei": "fonts/ZCOOLXiaoWei-Regular.ttf",       # 站酷小薇体——细笔画，清新文艺，默认选项
+    "mashanzheng": "fonts/MaShanZheng-Regular.ttf",     # 马善政毛笔体——粗细分明的毛笔字，传统喜庆
+    "zhimangxing": "fonts/ZhiMangXing-Regular.ttf",     # 知末行书——行云流水的行书体，柔和飘逸
+    "longcang": "fonts/LongCang-Regular.ttf",           # 龙藏体——古朴雅致，偏古风韵味
+    "liujianmaocao": "fonts/LiuJianMaoCao-Regular.ttf", # 刘建毛草——洒脱写意的草书，个性强但辨识度较低
+}
+# 标题文字的字面意思，跟哪种字体风格更搭——用关键词做个简单归类，不是什么复杂的NLP，
+# 就是标题里出现了某一类词，就大概率适合某种字体调性。归类的顺序是有讲究的：先判断
+# 更"强"、更容易误判成别的类别的关键词（喜庆/传统这类通常伴随其它词一起出现），
+# 最后才轮到"没有明显倾向、就用默认"这个兜底选项
+POETIC_FONT_KEYWORDS = {
+    "mashanzheng": ["喜", "庆", "贺", "迎", "开业", "周年", "盛典", "启幕", "开启", "祝福", "团圆", "新春", "佳节"],
+    "longcang": ["古", "雅", "韵", "诗", "茶", "禅", "山水", "书院", "国潮", "传承", "匠心", "岁月"],
+    "zhimangxing": ["风", "云", "水", "柔", "静", "梦", "思", "光", "影", "微", "温柔", "轻", "远方"],
+}
+
+
+def pick_poetic_font_by_title(title_text):
+    """根据标题文字的字面意思，自动挑一款贴合调性的字体——按POETIC_FONT_KEYWORDS这张表
+    从上到下依次匹配，标题里只要出现了某一类的关键词就选对应字体，都没匹配上就退回默认的
+    站酷小薇体（清新百搭，适合大多数场景）"""
+    text = title_text or ""
+    for font_key, keywords in POETIC_FONT_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return font_key
+    return "xiaowei"
 
 TITLE_FONT_MAP = {
     "regular": NOTO_REGULAR, "bold": NOTO_BOLD, "black": NOTO_BLACK,
@@ -675,12 +705,15 @@ def build_poster_poetic(manifest, bg_img, out_path):
     诗句/文案，底部落款式的一行欢迎语+电话，没有价格、没有清单、没有色块装饰——靠照片
     本身的质感和大量留白撑起"高级感"，是克制而不是堆砌。
 
-    复用的字段（不需要新增任何表单字段或数据库列）：
+    复用的字段：
     - highlight_word：顶部品牌小标（纯文字，不加底色块，比如"亚朵酒店"）
-    - title：主标题诗句（大字，站酷小薇体）
+    - title：主标题诗句（大字）
     - highlights：主标题下方的小诗/文案，每条一行，居中，字号比标题小很多
     - footer_text：底部欢迎语（比如"欢迎您入住 xxx"）
     - phone_number：预订电话，复用跟其它版式一样的draw_phone_number
+    新增的字段：无——字体选择复用了标准版/纯大字风光版已经在用的title_font_weight这个
+    字段（不需要新的数据库列），只是这个版式下，这个字段认的可选值换成了POETIC_FONT_MAP
+    里那几个key；不填或填"auto"就按标题文字的字面意思自动挑（见POETIC_FONT_KEYWORDS）
     这个版式必须配一张实景照片才好看（没有配图的话就是纯色渐变兜底，但达不到"大片感"
     这个设计初衷，前端那边会提示这个版式建议配图）
     """
@@ -700,9 +733,21 @@ def build_poster_poetic(manifest, bg_img, out_path):
     draw = ImageDraw.Draw(canvas, "RGBA")
 
     f_brand = font([NOTO_REGULAR], max(14, round(30 * ts)))
-    title_lines = textwrap.fill(safe_text(manifest.get("title") or ""), width=8).split("\n")
-    f_title = fit_font_to_width([POETIC_FONT, NOTO_BOLD], 96, ms, title_lines, W - 120)
-    f_verse = font([POETIC_FONT, NOTO_REGULAR], max(14, round(34 * ms)))
+    title_text_raw = safe_text(manifest.get("title") or "")
+    title_lines = textwrap.fill(title_text_raw, width=8).split("\n")
+    # 字体选择：表单里手动选了具体哪一款就用哪一款；选的是"auto"（或者压根没传这个字段，
+    # 兼容老数据）就按标题文字的字面意思自动挑——这样手动选择的优先级总是高于自动挑选，
+    # 用户明确指定了就不会被自动逻辑覆盖掉
+    # 这个字段在其它版式（标准版等）的默认值是"artistic"，对"诗意品牌版"来说不是一个
+    # 有意义的取值——所以这里不是只认"auto"这一个值才自动挑，而是只要传进来的值不在
+    # POETIC_FONT_MAP这几个可选项里（包括"artistic"这种别的版式传过来的历史值），
+    # 都按自动挑选处理，更稳妥
+    font_choice = manifest.get("title_font_weight") or "auto"
+    if font_choice not in POETIC_FONT_MAP:
+        font_choice = pick_poetic_font_by_title(title_text_raw)
+    poetic_font_path = POETIC_FONT_MAP.get(font_choice, POETIC_FONT)
+    f_title = fit_font_to_width([poetic_font_path, NOTO_BOLD], 96, ms, title_lines, W - 120)
+    f_verse = font([poetic_font_path, NOTO_REGULAR], max(14, round(34 * ms)))
     f_footer = fit_font_to_width([NOTO_REGULAR], 28, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
 
     y = 64 + to
