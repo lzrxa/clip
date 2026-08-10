@@ -1263,11 +1263,19 @@ def main():
     elif bgm_ready_path:
         if audio_ducking:
             # BGM作为被闪避轨，人声作为侧链控制：说话时BGM自动降低，停顿时自然回升。
+            # 人声这路音频要同时喂给两个地方用——一路当侧链控制信号（决定BGM什么时候
+            # 该降音量），一路要跟处理完的BGM混在一起当最终人声。FFmpeg的filter graph里，
+            # 一个具名管道（[voice_adj]这种方括号标签）只能被下一个滤镜消费一次，是单向
+            # 单次的连接关系，不能像变量一样重复引用给两个不同的滤镜当输入——之前这里
+            # 就是把[voice_adj]直接喂给了sidechaincompress和amix两处，实际测试会直接报
+            # "Invalid stream specifier"错误，运行不起来。要同一路音频同时喂给多个滤镜，
+            # 必须先用asplit显式分裂成几路独立的拷贝，各用各的
             duck_filter=(
-                f"[1:a]volume={voice_volume}[voice_adj];"
+                f"[1:a]volume={voice_volume}[voice_raw];"
+                "[voice_raw]asplit=2[voice_side][voice_mix];"
                 f"[2:a]volume=1.0[bgm_base];"
-                "[bgm_base][voice_adj]sidechaincompress=threshold=0.035:ratio=8:attack=18:release=320:makeup=1[bgm_ducked];"
-                "[voice_adj][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                "[bgm_base][voice_side]sidechaincompress=threshold=0.035:ratio=8:attack=18:release=320:makeup=1[bgm_ducked];"
+                "[voice_mix][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
             )
         else:
             duck_filter=(
