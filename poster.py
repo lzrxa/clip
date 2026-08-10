@@ -35,6 +35,11 @@ NOTO_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 NOTO_REGULAR = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 NOTO_BLACK = "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc"
 ARTISTIC_FONT = "fonts/ZCOOLKuaiLe-Regular.ttf"  # 站酷快乐体，海报标题专用的活泼艺术字体
+# 站酷小薇体——跟上面那个活泼艺术字同一个字体家族（站酷，Google Fonts官方OFL开源协议
+# 分发，免费商用），但气质完全不同：细笔画、带一点书写的不规则感，读起来更文艺、更安静，
+# 不是"圆润可爱"那种活泼调性。专门给"诗意品牌版"这个新版式用，追求的是海报大片、
+# 情绪文案那种克制、有质感的效果，不是热闹的宣传物料
+POETIC_FONT = "fonts/ZCOOLXiaoWei-Regular.ttf"
 
 TITLE_FONT_MAP = {
     "regular": NOTO_REGULAR, "bold": NOTO_BOLD, "black": NOTO_BLACK,
@@ -659,6 +664,85 @@ def build_poster_brand(manifest, bg_img, out_path):
         qr_bg = Image.new("RGBA", (166, 166), (255, 255, 255, 255))
         qr_bg.paste(contact_img, (8, 8))
         canvas.paste(qr_bg, (W - 210, H - 250), qr_bg)
+
+    canvas.convert("RGB").save(out_path, quality=92, optimize=True)
+
+
+def build_poster_poetic(manifest, bg_img, out_path):
+    """诗意品牌版：大片感的高端酒店/文旅品牌海报常见形态——一张有质感的实景照片铺满整个
+    画面，几乎不加深色遮罩（只在标题、底部文字这两小块区域做很轻的渐变，够看清字就行，
+    不压暗整张照片），标题用站酷小薇体这种细笔画、带一点书写不规则感的字体，配一小段
+    诗句/文案，底部落款式的一行欢迎语+电话，没有价格、没有清单、没有色块装饰——靠照片
+    本身的质感和大量留白撑起"高级感"，是克制而不是堆砌。
+
+    复用的字段（不需要新增任何表单字段或数据库列）：
+    - highlight_word：顶部品牌小标（纯文字，不加底色块，比如"亚朵酒店"）
+    - title：主标题诗句（大字，站酷小薇体）
+    - highlights：主标题下方的小诗/文案，每条一行，居中，字号比标题小很多
+    - footer_text：底部欢迎语（比如"欢迎您入住 xxx"）
+    - phone_number：预订电话，复用跟其它版式一样的draw_phone_number
+    这个版式必须配一张实景照片才好看（没有配图的话就是纯色渐变兜底，但达不到"大片感"
+    这个设计初衷，前端那边会提示这个版式建议配图）
+    """
+    scheme = get_color_scheme(manifest)
+    ACCENT_GOLD = scheme["hilight"]
+    scale_cfg = get_poster_scale_config(manifest)
+    ts, to = scale_cfg["top_scale"], scale_cfg["top_offset"]
+    ms, mo = scale_cfg["mid_scale"], scale_cfg["mid_offset"]
+    bs, bo = scale_cfg["bottom_scale"], scale_cfg["bottom_offset"]
+
+    canvas = cover_resize(bg_img, W, H).convert("RGBA") if bg_img else Image.new("RGBA", (W, H), scheme["dark"])
+    # 遮罩故意做得很轻——只是为了保证文字读得清楚，不是要把照片压暗当"背景板"用。
+    # 跟其它版式动辄70%+不透明度的深色遮罩比，这里顶多到45%，把"让照片本身说话"
+    # 这个设计意图落到实处
+    add_vertical_gradient(canvas, (0, 0, W, 560), 100, 0)
+    add_vertical_gradient(canvas, (0, H - 420, W, H), 0, 115)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    f_brand = font([NOTO_REGULAR], max(14, round(30 * ts)))
+    title_lines = textwrap.fill(safe_text(manifest.get("title") or ""), width=8).split("\n")
+    f_title = fit_font_to_width([POETIC_FONT, NOTO_BOLD], 96, ms, title_lines, W - 120)
+    f_verse = font([POETIC_FONT, NOTO_REGULAR], max(14, round(34 * ms)))
+    f_footer = fit_font_to_width([NOTO_REGULAR], 28, bs, safe_text(manifest.get("footer_text") or ""), W - 96)
+
+    y = 64 + to
+    brand = safe_text(manifest.get("highlight_word") or "")
+    if brand:
+        # 品牌小标就是纯文字，故意不配底色块——参考的那几张大片里，logo/品牌名都是
+        # 干干净净地飘在照片上，没有色块托底，这也是"克制"这个设计思路的一部分
+        spaced_brand = " ".join(list(brand))
+        draw.text((48, y), spaced_brand, font=f_brand, fill=(255, 255, 255, 235),
+                   stroke_width=1, stroke_fill=(0, 0, 0, 140))
+        y += round(68 * ts)
+    y += mo
+
+    for line in title_lines:
+        bbox = draw.textbbox((0, 0), line, font=f_title)
+        tw = bbox[2] - bbox[0]
+        draw.text(((W - tw) / 2, y), line, font=f_title, fill=(255, 255, 255, 255),
+                   stroke_width=2, stroke_fill=(0, 0, 0, 150))
+        y += (bbox[3] - bbox[1]) + round(30 * ms)
+
+    verses = [safe_text(h) for h in (manifest.get("highlights") or [])][:6]
+    if verses:
+        y += round(36 * ms)
+        for line in verses:
+            bbox = draw.textbbox((0, 0), line, font=f_verse)
+            tw = bbox[2] - bbox[0]
+            draw.text(((W - tw) / 2, y), line, font=f_verse, fill=(*ACCENT_GOLD, 235),
+                       stroke_width=1, stroke_fill=(0, 0, 0, 130))
+            y += round(58 * ms)
+
+    footer_y = H - 190 + bo
+    if manifest.get("footer_text"):
+        wrapped_footer = textwrap.fill(safe_text(manifest["footer_text"]), width=20)
+        draw.multiline_text((48, footer_y), wrapped_footer, font=f_footer, fill=(255, 255, 255, 225), spacing=8)
+        bbox = draw.multiline_textbbox((0, 0), wrapped_footer, font=f_footer, spacing=8)
+        footer_y += (bbox[3] - bbox[1]) + round(20 * bs)
+    else:
+        footer_y += round(50 * bs)
+
+    draw_phone_number(draw, manifest, bs, footer_y)
 
     canvas.convert("RGB").save(out_path, quality=92, optimize=True)
 
@@ -1801,6 +1885,8 @@ def build_poster(manifest, bg_img, out_path):
         build_poster_dual_track(manifest, bg_img, out_path)
     elif template == "newsflash":
         build_poster_newsflash(manifest, bg_img, out_path)
+    elif template == "poetic":
+        build_poster_poetic(manifest, bg_img, out_path)
     else:
         build_poster_standard(manifest, bg_img, out_path)
 
