@@ -90,14 +90,27 @@ SUBTITLE_COLOR_MAP = {
     "orange": (255, 160, 80),
 }
 
-# 字幕字体两个选项："标准黑体"是Noto Sans CJK的最粗字重，规规矩矩、清晰易读；"活泼艺术字"是
+# 字幕字体选项："标准黑体"是Noto Sans CJK的最粗字重，规规矩矩、清晰易读；"活泼艺术字"是
 # 站酷快乐体（跟海报标题用的是同一份字体，Google Fonts官方OFL开源协议分发，免费商用），
-# 圆润饱满，短视频平台上常见的那种"更漂亮"的字幕大多是这类风格的字体，不是靠描边/阴影做出来的
+# 圆润饱满，短视频平台上常见的那种"更漂亮"的字幕大多是这类风格的字体，不是靠描边/阴影做出来的。
+# 后面5款是给"诗意品牌版"海报配的那一套书法/手写体字体库，同一份字体文件视频这边也能直接用——
+# 字幕这种场景不是每次都适合书法体（笔画细、连笔多的字体，字号小的时候容易糊成一团看不清），
+# 所以没有把它们设成默认，作为额外的可选风格，想用的时候自己在"字幕设置"里选
 def resolve_subtitle_font(font_style, bold):
     if font_style == "artistic":
         return "ZCOOL KuaiLe"  # 站酷快乐体，圆润饱满、偏可爱活泼；本身只有一个常规字重，没有"加粗"这个概念，bold参数对它不生效
     if font_style == "artistic2":
         return "ZCOOL QingKe HuangYou"  # 站酷庆科黄油体，比快乐体更粗壮扎实、更有冲击力，同样只有常规字重
+    if font_style == "xiaowei":
+        return "ZCOOL XiaoWei"  # 站酷小薇体，细笔画，清新文艺
+    if font_style == "mashanzheng":
+        return "Ma Shan Zheng"  # 马善政毛笔体，粗细分明的毛笔字，传统喜庆
+    if font_style == "zhimangxing":
+        return "Zhi Mang Xing"  # 知末行书，行云流水，柔和飘逸
+    if font_style == "longcang":
+        return "Long Cang"  # 龙藏体，古朴雅致，偏古风韵味
+    if font_style == "liujianmaocao":
+        return "Liu Jian Mao Cao"  # 刘建毛草，洒脱写意的草书，笔画连得比较厉害，字号小的时候不太好辨认，字号大、字数少的场景（比如开头标题）更合适
     return "Noto Sans CJK SC Black" if bold else "Noto Sans CJK SC"
 
 
