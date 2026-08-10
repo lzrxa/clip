@@ -33,9 +33,13 @@ jobs:
           mkdir -p fonts
           curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
 
-      - name: 下载"诗意品牌版"专用字体（站酷小薇体，同一个开源字体家族，细笔画更文艺）
+      - name: 下载"诗意品牌版"专用字体库（5款，同一个Google Fonts官方OFL开源协议家族，免费商用）
         run: |
           curl -sL --fail -o fonts/ZCOOLXiaoWei-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf"
+          curl -sL --fail -o fonts/MaShanZheng-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf"
+          curl -sL --fail -o fonts/ZhiMangXing-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf"
+          curl -sL --fail -o fonts/LongCang-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf"
+          curl -sL --fail -o fonts/LiuJianMaoCao-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf"
 
       - name: 生成海报
         env:
