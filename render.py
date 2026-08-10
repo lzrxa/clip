@@ -57,7 +57,7 @@ def redact_urls(text):
     return re.sub(r"https?://\S+", "[链接已隐藏]", str(text))
 
 
-def callback(status, video_url=None, cover_url=None, cover_options=None, error=None):
+def callback(status, video_url=None, cover_url=None, cover_options=None, error=None, render_metrics=None):
     payload = {"task_id": TASK_ID, "secret": RENDER_SECRET, "status": status}
     if video_url:
         payload["video_url"] = video_url
@@ -67,6 +67,8 @@ def callback(status, video_url=None, cover_url=None, cover_options=None, error=N
         payload["cover_options"] = cover_options
     if error:
         payload["error"] = redact_urls(error)[:2000]
+    if render_metrics:
+        payload["render_metrics"] = render_metrics
 
     callback_url = f"{PAGES_BASE_URL}/api/render-callback"
     try:
@@ -767,6 +769,38 @@ def choose_best_cover(candidates):
     return ranked[0]
 
 
+def probe_render_metrics(path):
+    """生成成片的轻量技术质检指标，给Cloudflare端AI审片使用；失败不影响成片。"""
+    try:
+        cmd=["ffprobe","-v","error","-show_streams","-show_format","-of","json",path]
+        raw=subprocess.run(cmd,capture_output=True,text=True,check=True).stdout
+        data=json.loads(raw)
+        streams=data.get("streams",[])
+        fmt=data.get("format",{})
+        v=next((x for x in streams if x.get("codec_type")=="video"),{})
+        a=next((x for x in streams if x.get("codec_type")=="audio"),None)
+        duration=float(fmt.get("duration") or v.get("duration") or 0)
+        fps=0
+        fr=v.get("avg_frame_rate") or "0/1"
+        try:
+            n,d=fr.split("/"); fps=round(float(n)/float(d),2) if float(d) else 0
+        except Exception: pass
+        return {
+            "duration_sec": round(duration,3),
+            "width": int(v.get("width") or 0),
+            "height": int(v.get("height") or 0),
+            "fps": fps,
+            "video_codec": v.get("codec_name") or "",
+            "audio_present": bool(a),
+            "audio_codec": (a or {}).get("codec_name") or "",
+            "audio_duration_sec": round(float((a or {}).get("duration") or 0),3),
+            "size_bytes": Path(path).stat().st_size if os.path.exists(path) else 0,
+        }
+    except Exception as e:
+        print("成片技术指标检测失败：",e)
+        return {}
+
+
 def main():
     os.makedirs(WORKDIR, exist_ok=True)
 
@@ -985,9 +1019,23 @@ def main():
     if beat_sync and rhythm_beats:
         planned_durations=align_durations_to_beats(planned_durations,rhythm_beats,sum(planned_durations))
         print("节拍同步后的镜头时长：",[round(x,2) for x in planned_durations])
+
+    # xfade会让相邻镜头重叠 d 秒，因此直接拿原计划时长做转场会让最终视频
+    # 比配音短 (镜头数-1)*d。这里先把各镜头总时长按比例放大，再由xfade扣掉重叠，
+    # 保证转场后的成片长度仍然等于原来的目标时长，字幕/配音不会出现尾部不同步。
+    render_durations = list(planned_durations)
+    if transition_style != "none" and len(render_durations) > 1:
+        d=min(max(float(transition_duration),0.15),0.6)
+        target=sum(render_durations)
+        extra=(len(render_durations)-1)*d
+        if target > 0:
+            factor=(target+extra)/target
+            render_durations=[x*factor for x in render_durations]
+            print(f"转场时长补偿：目标 {target:.2f}s，重叠 {extra:.2f}s，镜头时长缩放 {factor:.4f}")
+
     clip_paths=[]
     for i, shot in enumerate(shots):
-        clip_paths.append(make_shot_clip(i, shot, planned_durations[i], canvas_w=CANVAS_W, canvas_h=CANVAS_H))
+        clip_paths.append(make_shot_clip(i, shot, render_durations[i], canvas_w=CANVAS_W, canvas_h=CANVAS_H))
 
     clip_list_path = f"{WORKDIR}/concat_list.txt"
     with open(clip_list_path, "w") as f:
@@ -998,7 +1046,7 @@ def main():
     used_transition=False
     if transition_style != "none":
         try:
-            used_transition=build_transitioned_video(clip_paths, planned_durations, concat_path, transition_style, transition_duration)
+            used_transition=build_transitioned_video(clip_paths, render_durations, concat_path, transition_style, transition_duration)
             print(f"专业转场：{transition_style} / {transition_duration:.2f}s / 成功={used_transition}")
         except Exception as e:
             print("转场渲染失败，自动回退无转场：",e)
@@ -1351,7 +1399,9 @@ def main():
         except Exception:
             pass
 
-    callback("succeeded", video_url=video_url, cover_url=cover_url, cover_options=cover_options)
+    render_metrics = probe_render_metrics(final_path)
+    print("成片技术指标：", render_metrics)
+    callback("succeeded", video_url=video_url, cover_url=cover_url, cover_options=cover_options, render_metrics=render_metrics)
     print("完成，视频地址:", video_url)
 
 
