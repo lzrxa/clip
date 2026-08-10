@@ -1658,33 +1658,40 @@ def build_poster_newsflash(manifest, bg_img, out_path):
         color = (*GOLD, 255) if idx % 2 == 0 else (255, 255, 255, 255)
         bbox = draw.textbbox((0, 0), line, font=f_title)
         tw = bbox[2] - bbox[0]
-        draw.text(((W - tw) / 2, y), line, font=f_title, fill=color, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+        draw.text(((W - tw) / 2, y), line, font=f_title, fill=color, stroke_width=2, stroke_fill=(0, 0, 0, 200))
         y += (bbox[3] - bbox[1]) + round(28 * ms)
     y += round(30 * ms)
 
     if badge_text:
-        card_h = round(120 * bs)
-        draw.rounded_rectangle([48, y, W - 48, y + card_h], radius=16, fill=(*GOLD, 245))
-        bbox = draw.multiline_textbbox((0, 0), badge_text, font=f_badge_head)
+        # 之前是一整条从左边缘顶到右边缘、纯色填满的金色横幅——很像促销广告里的"优惠券"
+        # 贴纸，不够精致。改成往内缩进一段距离的卡片，边框改成细线勾边+半透明深色底
+        # （不是纯色实心），文字也从深色改成金色本身，卡片整体更像"一处被单独标出来的
+        # 重点摘录"，而不是一条抢眼的横幅广告条
         wrapped_badge = textwrap.fill(badge_text, width=14)
-        bbox2 = draw.multiline_textbbox((0, 0), wrapped_badge, font=f_badge_head, spacing=8)
+        bbox2 = draw.multiline_textbbox((0, 0), wrapped_badge, font=f_badge_head, spacing=10)
         tw2, th2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
+        pad_x, pad_y = 40, 28
+        card_left, card_right = 88, W - 88
+        card_h = th2 + pad_y * 2
+        draw.rounded_rectangle([card_left, y, card_right, y + card_h], radius=4, outline=(*GOLD, 220), width=2,
+                                fill=(*DARK, 140))
         draw.multiline_text(((W - tw2) / 2, y + (card_h - th2) / 2), wrapped_badge, font=f_badge_head,
-                             fill=DARK, spacing=8, align="center")
+                             fill=(*GOLD, 255), spacing=10, align="center")
         y += card_h + round(40 * bs)
 
     for item in highlights:
         icon_r = round(20 * bs)
-        # 之前这里用的是警示三角图标（感叹号那种），本来是想借用"划重点"的既视感，但
-        # 警示/警告类图标天然带着"要小心""有问题"的暗示，跟"重大喜讯""周年庆"这类
-        # 报喜报好消息的内容调性完全对不上，看着别扭。换成星星图标——跟"惊喜权益"那个
-        # 场景是同一个图标，喜庆感更贴合，也不会让人下意识以为是什么警告提示
-        draw_star_icon(draw, 68, y + icon_r, icon_r, (*GOLD, 255), DARK)
         wrapped_item = textwrap.fill(item, width=22)
-        draw.multiline_text((104, y), wrapped_item, font=f_body, fill=(255, 255, 255, 245),
-                             stroke_width=2, stroke_fill=(0, 0, 0, 200), spacing=10)
-        bbox = draw.multiline_textbbox((0, 0), wrapped_item, font=f_body, spacing=10)
-        y += (bbox[3] - bbox[1]) + round(36 * bs)
+        bbox_measure = draw.multiline_textbbox((0, 0), wrapped_item, font=f_body, spacing=10)
+        item_h = bbox_measure[3] - bbox_measure[1]
+        # 之前这里先后用过警示三角、星星图标，都是"贴纸感"比较强的具象图标——跟"高级感"
+        # 想要的克制、留白感觉不太搭。换成一根细金色竖线，是杂志/年报这类偏正式的排版
+        # 里常见的重点标记方式，简单但足够醒目，也不会有具象图标那种"可爱/促销"的调性
+        bar_w = max(3, round(5 * bs))
+        draw.rounded_rectangle([48, y + 4, 48 + bar_w, y + item_h - 4], radius=bar_w / 2, fill=(*GOLD, 235))
+        draw.multiline_text((88, y), wrapped_item, font=f_body, fill=(255, 255, 255, 245),
+                             stroke_width=1, stroke_fill=(0, 0, 0, 170), spacing=10)
+        y += item_h + round(36 * bs)
 
     if overview_text:
         # 详细说明段落：跟上面几条要点不一样，这个是完整的一段话，不加图标、不是逐条罗列，
