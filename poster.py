@@ -2037,7 +2037,8 @@ def main():
         endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
         aws_access_key_id=R2_ACCESS_KEY_ID,
         aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        config=Config(signature_version="s3v4"),
+        # 补上retries配置，R2偶尔的连接抖动不会再直接导致上传失败
+        config=Config(signature_version="s3v4", retries={"max_attempts": 4, "mode": "standard"}),
         region_name="auto",
     )
     key = f"posters/{POSTER_ID}.jpg"

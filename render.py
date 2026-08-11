@@ -69,7 +69,11 @@ def s3_client():
         endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
         aws_access_key_id=R2_ACCESS_KEY_ID,
         aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        config=Config(signature_version="s3v4", max_pool_connections=16),
+        # retries是这边新加的——原来的max_pool_connections（多路并发上传用的连接池）已经
+        # 保留，另外补上boto3自带的标准重试模式，R2偶尔的连接抖动不会再直接导致upload_file
+        # 这类操作失败（比如封面图上传失败、视频本身却上传成功了这种情况）
+        config=Config(signature_version="s3v4", max_pool_connections=16,
+                      retries={"max_attempts": 4, "mode": "standard"}),
         region_name="auto",
     )
 
@@ -1564,8 +1568,10 @@ def main():
             run(["ffmpeg","-y","-ss","0.8","-i",final_path,"-frames:v","1","-vf","scale=480:-1",cover_path])
             key=f"videos/{TASK_ID}_cover.jpg"
             cover_url=upload_r2(cover_path, key, "image/jpeg")
-        except Exception:
-            pass
+        except Exception as e2:
+            # 之前这里是空的except、不打印任何东西——退回封面都失败的话，除了"这条视频最终
+            # 没有封面图"这个现象，日志里查不到任何原因。现在至少留一条线索
+            print("回退封面也失败了，这条视频最终不会有封面图：",e2)
 
     render_metrics = probe_render_metrics(final_path)
     print("成片技术指标：", render_metrics)
