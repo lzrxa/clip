@@ -1,5 +1,6 @@
 name: Render Video
-
+permissions:
+  contents: read
 on:
   workflow_dispatch:
     inputs:
@@ -7,55 +8,92 @@ on:
         description: '要渲染的任务ID'
         required: true
         type: string
-
+      enable_asr:
+        description: '是否启用自定义配音ASR'
+        required: false
+        default: 'false'
+        type: string
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PIP_NO_INPUT: '1'
+  PYTHONUNBUFFERED: '1'
 jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      # 同一个task_id如果被再次触发（手滑连点两次、或者失败后马上重试），
-      # 直接取消上一个还没跑完的实例，不让两个渲染任务同时跑、抢着上传/回调同一个task_id，
-      # 不同任务之间用的是不同的task_id、各有各的group，互不影响
       group: render-video-${{ inputs.task_id }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: 安装依赖（ffmpeg + 中文字体 + edge-tts + 上传/回调所需库）
+          cache: 'pip'
+          cache-dependency-path: |
+            render-repo/requirements-render.txt
+            render-repo/requirements-render-asr.txt
+      - name: 准备系统依赖（仅缺失时安装）
+        shell: bash
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji
-          pip install --quiet edge-tts requests boto3 Pillow
-
+          set -euo pipefail
+          cd render-repo
+          NEED_APT=0
+          command -v ffmpeg >/dev/null 2>&1 || NEED_APT=1
+          fc-match 'Noto Sans CJK SC' >/dev/null 2>&1 || NEED_APT=1
+          fc-match 'Noto Color Emoji' >/dev/null 2>&1 || NEED_APT=1
+          if [ "$NEED_APT" = "1" ]; then
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fonts-noto-color-emoji
+          else
+            echo 'Runner 已自带 ffmpeg/CJK/Emoji 字体，跳过 apt 安装。'
+          fi
       - name: 缓存 Whisper 模型
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: whisper-${{ runner.os }}-${{ hashFiles('requirements-stage2.txt') }}-small
+          key: whisper-${{ runner.os }}-${{ hashFiles('render-repo/requirements-render.txt') }}-small
           restore-keys: |
             whisper-${{ runner.os }}-
-
-      - name: 安装"AI营销工厂"阶段新增的可选依赖（节拍检测用numpy、自定义配音转字幕用
-          faster-whisper）——这两个功能代码本身有优雅降级（装不上会跳过对应功能，不会
-          让整个渲染失败），但装上才能真正用上这两个功能，不是摆设
+      - name: 缓存艺术字体
+        uses: actions/cache@v4
+        with:
+          path: render-repo/fonts
+          key: fonts-render-v2502-${{ runner.os }}-${{ hashFiles('render-repo/.github/workflows/render.yml') }}
+      - name: 安装 Python 运行依赖并准备艺术字体
+        shell: bash
         run: |
-          pip install --quiet -r requirements-stage2.txt || echo "可选依赖安装失败，节拍同步/自定义配音转字幕这两个功能会被跳过，其余功能不受影响"
-
-      - name: 下载字幕艺术字体（Google Fonts官方OFL开源协议分发，免费商用）
+          set -euo pipefail
+          cd render-repo
+          if [ ! -f fonts/ZCOOLKuaiLe-Regular.ttf ]; then
+            mkdir -p fonts
+            curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf' & p1=$!
+            curl -sL --fail -o fonts/ZCOOLQingKeHuangYou-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf' & p2=$!
+            curl -sL --fail -o fonts/ZCOOLXiaoWei-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf' & p3=$!
+            curl -sL --fail -o fonts/MaShanZheng-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf' & p4=$!
+            curl -sL --fail -o fonts/ZhiMangXing-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf' & p5=$!
+            curl -sL --fail -o fonts/LongCang-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf' & p6=$!
+            curl -sL --fail -o fonts/LiuJianMaoCao-Regular.ttf 'https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf' & p7=$!
+            wait $p1 $p2 $p3 $p4 $p5 $p6 $p7
+          fi
+          python -m pip install --prefer-binary --quiet -r requirements-render.txt
+          if [ "${{ inputs.enable_asr }}" = "true" ]; then
+            echo '启用自定义配音 ASR，安装 faster-whisper…'
+            python -m pip install --prefer-binary --quiet -r requirements-render-asr.txt
+          else
+            echo '未启用自定义配音 ASR，跳过 faster-whisper 安装。'
+          fi
+      - name: 渲染前环境自检
         run: |
-          mkdir -p fonts
-          curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
-          curl -sL --fail -o fonts/ZCOOLQingKeHuangYou-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
-          curl -sL --fail -o fonts/ZCOOLXiaoWei-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf"
-          curl -sL --fail -o fonts/MaShanZheng-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf"
-          curl -sL --fail -o fonts/ZhiMangXing-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf"
-          curl -sL --fail -o fonts/LongCang-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf"
-          curl -sL --fail -o fonts/LiuJianMaoCao-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf"
-
+          cd render-repo
+          ffmpeg -version | head -1
+          python - <<'PY'
+          import boto3, requests, PIL, edge_tts
+          print('Python runtime OK')
+          if '${{ inputs.enable_asr }}' == 'true':
+              import faster_whisper
+              print('faster-whisper OK')
+          PY
       - name: 执行渲染
         env:
           TASK_ID: ${{ inputs.task_id }}
@@ -67,19 +105,14 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
           TTS_VOICE: ${{ vars.TTS_VOICE }}
-        run: python render.py
-
-      - name: 失败或被取消时也要通知Cloudflare（避免任务卡在"合成中"）
-        # 只写if: failure()漏了一种情况：15分钟超时会让这次运行的结论是"cancelled"，
-        # 不是"failure"，if: failure()压根不会触发，导致任务卡在"合成中"，只能等前端下次
-        # 轮询触发selfHealFromR2兜底检查才可能被纠正过来。这里把cancelled()也加上，
-        # 超时/被新一次触发取消掉，都能第一时间把状态改回failed，不用干等
+        run: cd render-repo && python render.py
+      - name: 失败或被取消时也要通知Cloudflare
         if: failure() || cancelled()
         env:
           TASK_ID: ${{ inputs.task_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: |
-          curl -s -X POST "$PAGES_BASE_URL/api/render-callback" \
-            -H "Content-Type: application/json" \
+          curl -sS --retry 3 --retry-delay 1 -X POST "$PAGES_BASE_URL/api/render-callback" \
+            -H 'Content-Type: application/json' \
             -d "{\"task_id\": \"$TASK_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"渲染步骤执行失败，请查看 GitHub Actions 日志\"}"
