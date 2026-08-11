@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import wave
 import requests
 from PIL import Image, ImageStat
@@ -35,6 +36,29 @@ FONTS_DIR = "fonts"  # render.yml会把站酷快乐体下载到这个目录，�
 def run(cmd):
     print("+ " + " ".join(cmd))
     subprocess.run(cmd, check=True)
+
+
+# 下载素材/配音/BGM/水印这几个网络请求，之前一次超时/连接失败就直接让整个渲染任务报错，
+# 白白浪费前面已经做完的步骤（脚本生成、素材匹配这些）。R2这类对象存储偶尔慢一下、
+# 读超时是正常网络抖动，不代表文件真的取不到——重试几次，中间等一下，能大幅减少
+# 这种偶发抖动导致整个任务失败的情况。真的连续失败很多次，才说明不是"抖一下"这种
+# 情况，让异常正常抛出去
+def fetch_with_retry(url, timeout=60, max_retries=3, backoff_base=3):
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_error = e
+            if attempt < max_retries:
+                wait_sec = backoff_base * attempt
+                print(f"下载失败（第{attempt}次，{type(e).__name__}），{wait_sec}秒后重试：{url}")
+                time.sleep(wait_sec)
+            else:
+                print(f"下载失败，已重试{max_retries}次仍未成功：{url}")
+    raise last_error
 
 
 def s3_client():
@@ -71,17 +95,28 @@ def callback(status, video_url=None, cover_url=None, cover_options=None, error=N
         payload["render_metrics"] = render_metrics
 
     callback_url = f"{PAGES_BASE_URL}/api/render-callback"
-    try:
-        resp = requests.post(callback_url, json=payload, timeout=30)
-        if resp.history:
-            print("警告：这次请求发生了跳转，PAGES_BASE_URL可能配置有误：",
-                  " -> ".join(str(r.url) for r in resp.history) + " -> " + resp.url)
-        print("回调地址：", callback_url)
-        print("回调 HTTP 状态：", resp.status_code)
-        print("回调响应内容：", resp.text[:500])
-        resp.raise_for_status()
-    except Exception as e:
-        print("回调失败:", e)
+    # 回调是整个渲染任务唯一一次"告诉后端结果"的机会——不管成功还是失败，只要这一次
+    # 请求本身失败了（网络抖动、R2/Worker那边偶尔慢一拍），任务在数据库里就会永远停在
+    # "渲染中"，前端会一直显示进度条转下去，实际上GitHub Actions这边早就跑完了，只是
+    # 结果没能传回去。这里最多重试3次，覆盖偶发的网络抖动
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(callback_url, json=payload, timeout=30)
+            if resp.history:
+                print("警告：这次请求发生了跳转，PAGES_BASE_URL可能配置有误：",
+                      " -> ".join(str(r.url) for r in resp.history) + " -> " + resp.url)
+            print("回调地址：", callback_url)
+            print("回调 HTTP 状态：", resp.status_code)
+            print("回调响应内容：", resp.text[:500])
+            resp.raise_for_status()
+            return
+        except Exception as e:
+            last_error = e
+            print(f"回调失败（第{attempt}次）:", e)
+            if attempt < 3:
+                time.sleep(5 * attempt)
+    print("回调重试3次仍未成功，任务状态可能无法在网页上正确显示：", last_error)
 
 
 # ==================== 字幕生成：简洁样式，颜色/字号/位置/粗细都可由用户在网页里选择 ====================
@@ -669,8 +704,7 @@ def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
     src_path = f"{WORKDIR}/src_{i}.{ext}"
     clip_path = f"{WORKDIR}/clip_{i}.mp4"
 
-    r = requests.get(asset_url, timeout=60)
-    r.raise_for_status()
+    r = fetch_with_retry(asset_url, timeout=60)
     with open(src_path, "wb") as f:
         f.write(r.content)
 
@@ -957,8 +991,7 @@ def main():
         # 不是跟着语速一句一句精确同步）
         audio_path = f"{WORKDIR}/audio.mp3"
         srt_path = None
-        r = requests.get(custom_voice_url, timeout=60)
-        r.raise_for_status()
+        r = fetch_with_retry(custom_voice_url, timeout=60)
         with open(audio_path, "wb") as f:
             f.write(r.content)
         probe = subprocess.run(
@@ -1007,7 +1040,7 @@ def main():
     if beat_sync and bgm_url:
         try:
             bgm_src_path=f"{WORKDIR}/bgm_src.mp3"
-            r=requests.get(bgm_url,timeout=60); r.raise_for_status()
+            r=fetch_with_retry(bgm_url,timeout=60)
             with open(bgm_src_path,"wb") as f: f.write(r.content)
             rhythm_beats=detect_rhythm_beats(bgm_src_path,WORKDIR)
             print(f"检测到 {len(rhythm_beats)} 个节奏点")
@@ -1186,8 +1219,7 @@ def main():
     if enable_watermark and watermark_url:
         try:
             watermark_src_path = f"{WORKDIR}/watermark_src.png"
-            wm_resp = requests.get(watermark_url, timeout=30)
-            wm_resp.raise_for_status()
+            wm_resp = fetch_with_retry(watermark_url, timeout=30)
             with open(watermark_src_path, "wb") as f:
                 f.write(wm_resp.content)
             watermarked_path = f"{WORKDIR}/watermarked.mp4"
@@ -1278,8 +1310,7 @@ def main():
         try:
             if not bgm_src_path:
                 bgm_src_path = f"{WORKDIR}/bgm_src.mp3"
-                r = requests.get(bgm_url, timeout=60)
-                r.raise_for_status()
+                r = fetch_with_retry(bgm_url, timeout=60)
                 with open(bgm_src_path, "wb") as f:
                     f.write(r.content)
             bgm_ready_path = f"{WORKDIR}/bgm.mp3"

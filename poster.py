@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import textwrap
+import time
 from io import BytesIO
 import requests
 import boto3
@@ -197,6 +198,28 @@ def redact_urls(text):
     return re.sub(r"https?://\S+", "[链接已隐藏]", str(text))
 
 
+# 下载背景图/logo/教师头像这几个网络请求，之前一次超时/连接失败就直接让整个渲染任务
+# 报错，白白浪费前面已经做完的步骤。R2这类对象存储偶尔慢一下、读超时是正常网络抖动，
+# 不代表文件真的取不到——重试几次，中间等一下，能大幅减少这种偶发抖动导致整个任务
+# 失败的情况
+def fetch_with_retry(url, timeout=60, max_retries=3, backoff_base=3):
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_error = e
+            if attempt < max_retries:
+                wait_sec = backoff_base * attempt
+                print(f"下载失败（第{attempt}次，{type(e).__name__}），{wait_sec}秒后重试：{url}")
+                time.sleep(wait_sec)
+            else:
+                print(f"下载失败，已重试{max_retries}次仍未成功：{url}")
+    raise last_error
+
+
 def callback(status, poster_url=None, poster_url_square=None, error=None):
     payload = {"poster_id": POSTER_ID, "secret": RENDER_SECRET, "status": status}
     if poster_url:
@@ -207,17 +230,28 @@ def callback(status, poster_url=None, poster_url_square=None, error=None):
         payload["error"] = redact_urls(error)[:2000]
 
     callback_url = f"{PAGES_BASE_URL}/api/poster-callback"
-    try:
-        resp = requests.post(callback_url, json=payload, timeout=30)
-        if resp.history:
-            print("警告：这次请求发生了跳转，PAGES_BASE_URL可能配置有误：",
-                  " -> ".join(str(r.url) for r in resp.history) + " -> " + resp.url)
-        print("回调地址：", callback_url)
-        print("回调 HTTP 状态：", resp.status_code)
-        print("回调响应内容：", resp.text[:500])
-        resp.raise_for_status()
-    except Exception as e:
-        print("回调失败:", e)
+    # 回调是整个渲染任务唯一一次"告诉后端结果"的机会——不管成功还是失败，只要这一次
+    # 请求本身失败了（网络抖动、R2/Worker那边偶尔慢一拍），任务在数据库里就会永远停在
+    # "渲染中"，前端会一直显示进度条转下去，实际上GitHub Actions这边早就跑完了，只是
+    # 结果没能传回去。这里最多重试3次，覆盖偶发的网络抖动
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(callback_url, json=payload, timeout=30)
+            if resp.history:
+                print("警告：这次请求发生了跳转，PAGES_BASE_URL可能配置有误：",
+                      " -> ".join(str(r.url) for r in resp.history) + " -> " + resp.url)
+            print("回调地址：", callback_url)
+            print("回调 HTTP 状态：", resp.status_code)
+            print("回调响应内容：", resp.text[:500])
+            resp.raise_for_status()
+            return
+        except Exception as e:
+            last_error = e
+            print(f"回调失败（第{attempt}次）:", e)
+            if attempt < 3:
+                time.sleep(5 * attempt)
+    print("回调重试3次仍未成功，任务状态可能无法在网页上正确显示：", last_error)
 
 
 def fetch_manifest():
@@ -264,8 +298,7 @@ def get_background(manifest):
             img_url = data["data"][0].get("url")
         if not img_url:
             raise RuntimeError(f"AI背景生成返回格式异常: {data}")
-        img_resp = requests.get(img_url, timeout=60)
-        img_resp.raise_for_status()
+        img_resp = fetch_with_retry(img_url, timeout=60)
         bg_path = f"{WORKDIR}/bg_ai.jpg"
         with open(bg_path, "wb") as f:
             f.write(img_resp.content)
@@ -276,8 +309,7 @@ def get_background(manifest):
         asset_type = manifest.get("background_asset_type") or "image"
         if asset_type == "video":
             video_path = f"{WORKDIR}/bg_video.mp4"
-            img_resp = requests.get(manifest["background_url"], timeout=60)
-            img_resp.raise_for_status()
+            img_resp = fetch_with_retry(manifest["background_url"], timeout=60)
             with open(video_path, "wb") as f:
                 f.write(img_resp.content)
             bg_path = f"{WORKDIR}/bg_photo.jpg"
@@ -287,8 +319,7 @@ def get_background(manifest):
                 check=True,
             )
         else:
-            img_resp = requests.get(manifest["background_url"], timeout=60)
-            img_resp.raise_for_status()
+            img_resp = fetch_with_retry(manifest["background_url"], timeout=60)
             bg_path = f"{WORKDIR}/bg_photo.jpg"
             with open(bg_path, "wb") as f:
                 f.write(img_resp.content)
@@ -348,8 +379,7 @@ def get_contact_image(manifest, size):
     logo_url = manifest.get("logo_url")
     if logo_url:
         try:
-            resp = requests.get(logo_url, timeout=30)
-            resp.raise_for_status()
+            resp = fetch_with_retry(logo_url, timeout=30)
             img = Image.open(BytesIO(resp.content)).convert("RGBA")
             # 按比例缩放后居中裁剪成正方形，避免用户传的图片变形
             w, h = img.size
@@ -1078,8 +1108,7 @@ def build_poster_recruit(manifest, bg_img, out_path):
         avatar_x, avatar_y = 72, y + round(30 * bs)
         if teacher_photo_url:
             try:
-                resp = requests.get(teacher_photo_url, timeout=30)
-                resp.raise_for_status()
+                resp = fetch_with_retry(teacher_photo_url, timeout=30)
                 photo_img = Image.open(BytesIO(resp.content)).convert("RGBA")
                 pw, ph = photo_img.size
                 side = min(pw, ph)
@@ -1586,8 +1615,7 @@ def build_poster_teacher_profile(manifest, bg_img, out_path):
     photo_h_area = 760
     if teacher_photo_url:
         try:
-            resp = requests.get(teacher_photo_url, timeout=30)
-            resp.raise_for_status()
+            resp = fetch_with_retry(teacher_photo_url, timeout=30)
             photo_img = Image.open(BytesIO(resp.content)).convert("RGBA")
             photo_img = cover_resize(photo_img, W - 96, photo_h_area).convert("RGBA")
             mask = Image.new("L", (W - 96, photo_h_area), 0)
