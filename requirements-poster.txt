@@ -1,0 +1,5 @@
+# V250.3 runtime set for poster generation
+requests
+boto3
+Pillow>=10.0,<12
+qrcode

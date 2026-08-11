@@ -1,0 +1,5 @@
+# V250.3 base runtime for video rendering
+edge-tts
+requests
+boto3
+Pillow>=10.0,<12
