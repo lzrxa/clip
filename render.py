@@ -1,6 +1,5 @@
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 import sys
 import time
@@ -14,7 +13,6 @@ except Exception:
     np = None
 import boto3
 from botocore.config import Config
-from boto3.s3.transfer import TransferConfig
 
 TASK_ID = os.environ["TASK_ID"]
 _raw_base = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
@@ -69,33 +67,12 @@ def s3_client():
         endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
         aws_access_key_id=R2_ACCESS_KEY_ID,
         aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        # retries是这边新加的——原来的max_pool_connections（多路并发上传用的连接池）已经
-        # 保留，另外补上boto3自带的标准重试模式，R2偶尔的连接抖动不会再直接导致upload_file
-        # 这类操作失败（比如封面图上传失败、视频本身却上传成功了这种情况）
-        config=Config(signature_version="s3v4", max_pool_connections=16,
-                      retries={"max_attempts": 4, "mode": "standard"}),
+        # signature_version之外，这里补上了retries配置——之前完全没配置，R2偶尔的连接抖动
+        # 会导致upload_file这类操作直接失败，比如封面图上传失败就悄悄没有封面了。boto3自带
+        # 的标准重试模式，对连接超时、限流这类可重试的错误自动重试，不用自己再手写一遍
+        config=Config(signature_version="s3v4", retries={"max_attempts": 4, "mode": "standard"}),
         region_name="auto",
     )
-
-
-# V250.5：R2/S3 multipart 上传优化。视频通常远大于单个 PUT 的理想大小，
-# 让 boto3 自动分片并行上传；小文件仍然走普通上传，不增加额外复杂度。
-R2_TRANSFER_CONFIG = TransferConfig(
-    multipart_threshold=16 * 1024 * 1024,
-    multipart_chunksize=16 * 1024 * 1024,
-    max_concurrency=8,
-    use_threads=True,
-)
-
-
-def upload_r2(path, key, content_type):
-    client = s3_client()
-    client.upload_file(
-        path, R2_BUCKET_NAME, key,
-        ExtraArgs={"ContentType": content_type, "CacheControl": "public, max-age=31536000, immutable"},
-        Config=R2_TRANSFER_CONFIG,
-    )
-    return f"{R2_PUBLIC_BASE_URL}/{key}"
 
 
 def redact_urls(text):
@@ -721,71 +698,18 @@ def transcribe_custom_voice_to_srt(audio_path,out_path):
         print("自定义配音ASR不可用，退回基础字幕：",e); return False
 
 
-def _download_asset_to_file(url, path, timeout=60, max_retries=3):
-    """流式下载单个分镜素材，避免把大视频一次性读进内存。"""
-    last_error = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            with requests.get(url, timeout=timeout, stream=True) as resp:
-                resp.raise_for_status()
-                with open(path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-            return path
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
-            last_error = e
-            try:
-                if os.path.exists(path): os.remove(path)
-            except Exception:
-                pass
-            if attempt < max_retries:
-                wait_sec = min(2 * attempt, 6)
-                print(f"素材流式下载失败（第{attempt}次），{wait_sec}秒后重试：{url}")
-                time.sleep(wait_sec)
-    raise last_error
-
-
-def prefetch_shot_assets(shots):
-    """在真正启动多轮 ffmpeg 之前并发预取分镜素材。
-    网络下载与后续逐镜头转码解耦，尤其能缩短素材来自外部搜索源/R2时的等待时间。
-    同一 URL 只下载一次，重复镜头共享同一个本地源文件。
-    """
-    os.makedirs(WORKDIR, exist_ok=True)
-    unique = {}
-    for i, shot in enumerate(shots):
-        url = str(shot.get("asset_url") or "").strip()
-        if not url:
-            raise RuntimeError(f"第{i+1}个镜头缺少素材地址")
-        if url not in unique:
-            asset_type = shot.get("asset_type") or "video"
-            ext = "mp4" if asset_type == "video" else "jpg"
-            unique[url] = f"{WORKDIR}/src_{len(unique)}.{ext}"
-
-    workers = min(4, max(1, len(unique)))
-    print(f"素材预取：{len(shots)}个镜头 / {len(unique)}个唯一素材 / {workers}路并发")
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_download_asset_to_file, url, path): (url, path) for url, path in unique.items()}
-        for future in as_completed(futures):
-            url, path = futures[future]
-            future.result()
-            print(f"素材下载完成：{os.path.basename(path)}")
-
-    for shot in shots:
-        shot["_local_asset_path"] = unique[str(shot["asset_url"]).strip()]
-
-
 def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
     """生成单个镜头的标准化片段（尺寸跟着canvas_w/canvas_h走，默认还是原来的竖屏1080x1920）。
     图片素材加 Ken Burns 缓慢缩放效果，避免死画面。"""
     asset_url = shot["asset_url"]
     asset_type = shot.get("asset_type") or "video"
-    src_path = shot.get("_local_asset_path")
-    if not src_path:
-        ext = "mp4" if asset_type == "video" else "jpg"
-        src_path = f"{WORKDIR}/src_{i}.{ext}"
-        _download_asset_to_file(asset_url, src_path)
+    ext = "mp4" if asset_type == "video" else "jpg"
+    src_path = f"{WORKDIR}/src_{i}.{ext}"
     clip_path = f"{WORKDIR}/clip_{i}.mp4"
+
+    r = fetch_with_retry(asset_url, timeout=60)
+    with open(src_path, "wb") as f:
+        f.write(r.content)
 
     fps = 30
     if asset_type == "video":
@@ -1054,29 +978,6 @@ def main():
     custom_voice_url = manifest.get("custom_voice_url")
     use_custom_voice = (not no_voice_mode) and voice_source == "custom" and bool(custom_voice_url)
 
-    # V250.3：素材预取、BGM下载与配音生成可以并行准备。
-    # 这些阶段彼此不依赖最终时长：素材下载只需要shots，BGM下载/节拍分析只需要bgm_url，
-    # TTS只需要full_text。把它们串行执行会让“网络等待”全部叠加；这里先启动后台准备，
-    # 主线程继续做配音，等真正计算镜头时长前再汇合结果。最多各1个后台任务，避免在4核Runner上
-    # 同时启动过多CPU密集型FFmpeg。
-    prep_pool = ThreadPoolExecutor(max_workers=2)
-    asset_future = prep_pool.submit(prefetch_shot_assets, shots)
-
-    def prepare_bgm_source():
-        if not (beat_sync and bgm_url):
-            return None, []
-        try:
-            path=f"{WORKDIR}/bgm_src.mp3"
-            r=fetch_with_retry(bgm_url,timeout=60)
-            with open(path,"wb") as f: f.write(r.content)
-            beats=detect_rhythm_beats(path,WORKDIR)
-            return path, beats
-        except Exception as e:
-            print("预分析BGM失败，回退普通节奏：",e)
-            return None, []
-
-    bgm_future = prep_pool.submit(prepare_bgm_source) if (beat_sync and bgm_url) else None
-
     # 2. 配音生成——"纯风光+音乐"模式完全跳过这一步：没有配音就没有真实的语音时长可以对齐，
     # 画面时长直接用每个镜头自己的duration_sec（scale固定为1.0，不做任何缩放）
     if no_voice_mode:
@@ -1137,17 +1038,17 @@ def main():
     # 不用再各自判断走哪条路
     mix_target_duration = audio_duration if audio_duration is not None else total_video_duration
 
-    # V250.3：汇合后台准备结果。素材/BGM在TTS期间已经开始下载，通常这里直接拿到完成结果。
-    try:
-        asset_future.result()
-        if bgm_future:
-            bgm_src_path, rhythm_beats = bgm_future.result()
-            if rhythm_beats:
-                print(f"检测到 {len(rhythm_beats)} 个节奏点")
-        else:
-            bgm_src_path, rhythm_beats = None, []
-    finally:
-        prep_pool.shutdown(wait=True)
+    # 2.5 V3.0第二阶段：预分析BGM节奏，后面混音复用同一个下载文件
+    bgm_src_path=None; rhythm_beats=[]
+    if beat_sync and bgm_url:
+        try:
+            bgm_src_path=f"{WORKDIR}/bgm_src.mp3"
+            r=fetch_with_retry(bgm_url,timeout=60)
+            with open(bgm_src_path,"wb") as f: f.write(r.content)
+            rhythm_beats=detect_rhythm_beats(bgm_src_path,WORKDIR)
+            print(f"检测到 {len(rhythm_beats)} 个节奏点")
+        except Exception as e:
+            print("预分析BGM失败，回退普通节奏：",e); bgm_src_path=None; rhythm_beats=[]
 
     # 3. 逐镜头生成标准化分段；节拍同步只改变视觉镜头边界，不改变整条配音字幕时间轴。
     planned_durations=[max(1.0,float(shot["duration_sec"])*scale) for shot in shots]
@@ -1168,8 +1069,6 @@ def main():
             render_durations=[x*factor for x in render_durations]
             print(f"转场时长补偿：目标 {target:.2f}s，重叠 {extra:.2f}s，镜头时长缩放 {factor:.4f}")
 
-    # V250.3：素材已经在配音阶段后台预取完成，不再重复下载；只有异常时才会在这里重新抛错。
-    # 这样“AI/TTS等待 + 素材网络等待”可以重叠，缩短一键生成的总墙钟时间。
     clip_paths=[]
     for i, shot in enumerate(shots):
         clip_paths.append(make_shot_clip(i, shot, render_durations[i], canvas_w=CANVAS_W, canvas_h=CANVAS_H))
@@ -1194,9 +1093,15 @@ def main():
             "-c", "copy", concat_path,
         ])
 
-    # V250.4：黄金开头强化不再单独启动一次 FFmpeg。
-    # 它会在“字幕 + 水印 + 开头强化”的统一视频滤镜链里一次完成，避免重复整片编码。
-    hook_visual_enabled = bool(hook_emphasis and len(clip_paths) > 0)
+    # V3.0第三阶段：黄金开头强化。只处理视频前几秒，失败则保留原片。
+    if hook_emphasis and len(clip_paths) > 0:
+        try:
+            hook_path=f"{WORKDIR}/hook_enhanced.mp4"
+            strengthen_hook(concat_path,hook_path,3.0)
+            concat_path=hook_path
+            print("黄金开头强化完成")
+        except Exception as e:
+            print("黄金开头强化失败，跳过：",e)
 
     # 5. 生成字幕（简洁样式：统一颜色/字号/粗细/位置，都取自用户在网页里的设置）
     subtitled_path = f"{WORKDIR}/subtitled.mp4"
@@ -1226,8 +1131,11 @@ def main():
                 # 这个更保守但至少能正常出片的结果
                 print("纯风光+音乐模式字幕生成失败，退回无字幕（不影响视频合成）：", e)
 
-        # V250.4：先只构建 subtitle_filter，真正编码延后到统一视觉滤镜阶段。
-        # 这样字幕不会先编码一次、随后水印再完整编码一次。
+        if subtitle_filter:
+            run(["ffmpeg", "-y", "-i", concat_path, "-vf", subtitle_filter,
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path])
+        else:
+            run(["ffmpeg", "-y", "-i", concat_path, "-c", "copy", subtitled_path])
     else:
         ass_path = f"{WORKDIR}/audio.ass"
         try:
@@ -1301,7 +1209,11 @@ def main():
             except Exception as e:
                 print("底部字幕生成失败，跳过（不影响主字幕和视频合成）：", e)
 
-        # V250.4：真正的视频编码统一延后，subtitle_filter 会和开头强化/水印合并。
+        run([
+            "ffmpeg", "-y", "-i", concat_path,
+            "-vf", subtitle_filter,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", subtitled_path,
+        ])
 
     # 5.5 叠加水印/Logo（如果开启了的话）：单独起一趟ffmpeg，在字幕已经烧录完成的
     # subtitled_path基础上再叠一层，不去改动上面已经写好、测试过的字幕合成逻辑——
@@ -1325,13 +1237,17 @@ def main():
                 "center": "(W-w)/2:(H-h)/2",
             }
             overlay_pos = position_map.get(watermark_position, position_map["bottom-right"])
-            watermark_filter = (
-                f"[wm0]scale={round(CANVAS_W * watermark_scale)}:-2,format=rgba,"
+            run([
+                "ffmpeg", "-y", "-i", subtitled_path, "-i", watermark_src_path,
+                "-filter_complex",
+                f"[1:v]scale={round(CANVAS_W * watermark_scale)}:-2,format=rgba,"
                 f"colorchannelmixer=aa={watermark_opacity}[wm];"
-                f"[vpre][wm]overlay={overlay_pos}[vwm]"
-            )
-            watermark_input_path = watermark_src_path
-            print(f"水印已加入统一视频滤镜链：位置={watermark_position}，缩放={watermark_scale}，不透明度={watermark_opacity}")
+                f"[0:v][wm]overlay={overlay_pos}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                watermarked_path,
+            ])
+            subtitled_path = watermarked_path
+            print(f"水印叠加完成：位置={watermark_position}，缩放={watermark_scale}，不透明度={watermark_opacity}")
         except Exception as e:
             # 水印下载/叠加失败，不能让整条视频渲染跟着失败——退回没有水印的subtitled_path，
             # 后面步骤照常往下走
@@ -1374,70 +1290,20 @@ def main():
                 .replace("%", "")
                 .replace(":", "\\:")
             )
-            watermark_filter = (
-                f"[vpre]drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text='{escaped_text}':fontsize={font_size}:"
+            run([
+                "ffmpeg", "-y", "-i", subtitled_path,
+                "-vf",
+                f"drawtext=fontfile=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:text='{escaped_text}':fontsize={font_size}:"
                 f"fontcolor=white@{watermark_opacity}:{text_pos}:"
-                "shadowcolor=black@0.5:shadowx=1:shadowy=1[vwm]"
-            )
-            print(f"文字水印已加入统一视频滤镜链：内容={watermark_text}，位置={watermark_position}，不透明度={watermark_opacity}")
+                "shadowcolor=black@0.5:shadowx=1:shadowy=1",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "copy",
+                watermarked_path,
+            ])
+            subtitled_path = watermarked_path
+            print(f"文字水印叠加完成：内容={watermark_text}，位置={watermark_position}，不透明度={watermark_opacity}")
         except Exception as e:
             print("文字水印叠加失败，跳过（不影响视频正常合成）：", e)
-
-    # V250.4：统一视觉编码。
-    # 旧流程在“开头强化 -> 字幕 -> 水印”分别启动 FFmpeg，最坏情况下会把整条视频完整编码 3 次。
-    # 现在把这些纯视频滤镜合并成一次编码：
-    #   concat -> [hook] -> [subtitles] -> [watermark] -> visual.mp4
-    # 没有任何视觉滤镜时直接 stream copy，完全不增加开销。
-    visual_filter_parts = []
-    visual_input_args = ["-i", concat_path]
-    visual_labels = []
-    current_label = "0:v"
-    label_index = 0
-
-    if hook_visual_enabled:
-        label_index += 1
-        hook_label = f"vh{label_index}"
-        hook_d = 3.0
-        visual_filter_parts.append(
-            f"[{current_label}]scale=iw*1.025:ih*1.025,"
-            f"crop=iw/1.025:ih/1.025:(in_w-out_w)/2:(in_h-out_h)/2,"
-            f"eq=contrast=1.05:saturation=1.04:enable='lt(t,{hook_d:.2f})'[{hook_label}]"
-        )
-        current_label = hook_label
-        print("黄金开头强化已并入统一视频编码")
-
-    if subtitle_filter:
-        label_index += 1
-        sub_label = f"vs{label_index}"
-        visual_filter_parts.append(f"[{current_label}]{subtitle_filter}[{sub_label}]")
-        current_label = sub_label
-
-    watermark_filter = locals().get("watermark_filter") if "watermark_filter" in locals() else None
-    watermark_input_path = locals().get("watermark_input_path") if "watermark_input_path" in locals() else None
-    if watermark_filter:
-        if watermark_input_path:
-            visual_input_args += ["-i", watermark_input_path]
-            watermark_filter = watermark_filter.replace("[wm0]", "[1:v]")
-        watermark_filter = watermark_filter.replace("[vpre]", f"[{current_label}]")
-        visual_filter_parts.append(watermark_filter)
-        current_label = "vwm"
-
-    visual_output_path = f"{WORKDIR}/visual.mp4"
-    try:
-        if visual_filter_parts:
-            run([
-                "ffmpeg", "-y", *visual_input_args,
-                "-filter_complex", ";".join(visual_filter_parts),
-                "-map", f"[{current_label}]",
-                "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-pix_fmt", "yuv420p", visual_output_path,
-            ])
-        else:
-            run(["ffmpeg", "-y", "-i", concat_path, "-c", "copy", visual_output_path])
-        subtitled_path = visual_output_path
-    except Exception as e:
-        print("统一视觉编码失败，尝试回退到原始拼接视频：", e)
-        subtitled_path = concat_path
 
     # 6. 准备背景音乐：裁剪到跟成片一样长（正常模式跟配音时长走，纯风光模式跟镜头总时长走，
     # 都已经统一收敛到mix_target_duration这一个变量里了），按设定音量混入（不做淡入淡出/
@@ -1513,14 +1379,13 @@ def main():
             "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
         ])
 
-    # 8. V250.5：成片先上传，上传完成立刻通知 Cloudflare。
-    # 这样网页可以在“封面候选/评分/上传”还在后台进行时，先让用户打开刚生成的视频。
+    # 8. 上传视频到 R2
+    s3 = s3_client()
     video_key = f"videos/{TASK_ID}_final.mp4"
-    video_url = upload_r2(final_path, video_key, "video/mp4")
-    print("成片已上传 R2：", video_url)
-    callback("video_ready", video_url=video_url)
+    s3.upload_file(final_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
+    video_url = f"{R2_PUBLIC_BASE_URL}/{video_key}"
 
-    # 8.5 V250.5：封面生成与视频上传解耦。视频已经可以预览，不再被封面处理阻塞。
+    # 8.5 V3.0第三阶段：智能多封面候选 + 自动优选
     cover_url=None; cover_options=[]
     try:
         cover_titles=manifest.get("cover_titles") or []
@@ -1550,14 +1415,11 @@ def main():
             ranked=sorted(ranked,key=lambda x:x["score"],reverse=True)
         selected=ranked[:cover_count]
         # 对外展示按“方案1/2/3”稳定编号，但默认封面是评分最高的那一张。
-        def upload_cover(item_idx_pair):
-            idx, item = item_idx_pair
+        for idx,item in enumerate(selected,1):
             key=f"videos/{TASK_ID}_cover_{idx}.jpg"
-            url=upload_r2(item["path"], key, "image/jpeg")
-            return {"title":f"封面方案{idx}","url":url,"score":item.get("score",0)}
-
-        with ThreadPoolExecutor(max_workers=min(3, max(1, len(selected)))) as pool:
-            cover_options=list(pool.map(upload_cover, list(enumerate(selected,1))))
+            s3.upload_file(item["path"],R2_BUCKET_NAME,key,ExtraArgs={"ContentType":"image/jpeg"})
+            url=f"{R2_PUBLIC_BASE_URL}/{key}"
+            cover_options.append({"title":f"封面方案{idx}","url":url,"score":item.get("score",0)})
         if cover_options:
             cover_url=cover_options[0]["url"]
             print("智能封面评分：",[x.get("score") for x in cover_options])
@@ -1566,8 +1428,8 @@ def main():
         try:
             cover_path=f"{WORKDIR}/cover.jpg"
             run(["ffmpeg","-y","-ss","0.8","-i",final_path,"-frames:v","1","-vf","scale=480:-1",cover_path])
-            key=f"videos/{TASK_ID}_cover.jpg"
-            cover_url=upload_r2(cover_path, key, "image/jpeg")
+            key=f"videos/{TASK_ID}_cover.jpg"; s3.upload_file(cover_path,R2_BUCKET_NAME,key,ExtraArgs={"ContentType":"image/jpeg"})
+            cover_url=f"{R2_PUBLIC_BASE_URL}/{key}"
         except Exception as e2:
             # 之前这里是空的except、不打印任何东西——退回封面都失败的话，除了"这条视频最终
             # 没有封面图"这个现象，日志里查不到任何原因。现在至少留一条线索
