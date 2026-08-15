@@ -514,6 +514,39 @@ def build_bottom_caption_ass(lines, out_path, duration_sec=6, font_size=64, styl
 NUMBER_HIGHLIGHT_PATTERN = re.compile(r"\d+\.?\d*%?")
 
 
+def apply_keyword_highlight(text, base_color_tag, highlight_color_tag):
+    """把AI标注过的文本里，用【】包起来的关键词部分转成高亮色，其余部分保持底色——
+    跟apply_number_highlight是同一个设计思路：真正"上色"这个动作由程序自己完成，
+    AI只负责判断"哪几个字是这句话的情绪落点"，输出的是在原文里插入【】标记这种最
+    简单的标注方式，不需要AI直接生成ASS的颜色标签语法（\\c&H...&这种格式，AI直接写
+    很容易漏写反斜杠/漏闭合，一旦格式错了整个字幕文件都解析不出来）。
+    这里做了防御性处理：如果AI标注结果里【】没有成对出现（比如漏了一个），那一层
+    标记直接原样当普通文字处理、不生成高亮效果，不会让格式错误的标记污染最终输出
+    或者让程序报错中断。
+    """
+    if "【" not in text and "】" not in text:
+        return text
+    result = []
+    depth = 0
+    buf = []
+    for ch in text:
+        if ch == "【" and depth == 0:
+            depth = 1
+            buf = []
+        elif ch == "】" and depth == 1:
+            depth = 0
+            result.append(f"{{\\c{highlight_color_tag}}}{''.join(buf)}{{\\c{base_color_tag}}}")
+        elif depth == 1:
+            buf.append(ch)
+        else:
+            result.append(ch)
+    if depth == 1:
+        # 标记没有闭合（AI漏写了后半个【】、或者中间被截断），说明这次标注结果不可信，
+        # 保险起见把这句话的【去掉、当普通文字处理，不冒着输出半成品高亮标签的风险
+        return text.replace("【", "").replace("】", "")
+    return "".join(result)
+
+
 def apply_number_highlight(text, base_color_tag, highlight_color_tag):
     """把文本里的数字（含百分号）用ASS内联颜色标签包起来改成高亮色，其余部分保持底色不变——
     这是纯粹按正则规则识别数字模式、在渲染阶段由程序自己上色，不依赖AI输出任何markup，
@@ -528,7 +561,7 @@ def apply_number_highlight(text, base_color_tag, highlight_color_tag):
 
 def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", color_key="white", bold=True,
                         highlight_numbers=True, bg_box=False, font_style="standard", box_scheme="black",
-                        canvas_w=1080, canvas_h=1920):
+                        canvas_w=1080, canvas_h=1920, highlight_mode=None):
     """生成逐句解说字幕的ASS文件
 
     font_size: 字号（数字越大字越大）
@@ -542,6 +575,10 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
     font_style: 'standard'（Noto Sans CJK黑体，规矩清晰）/ 'artistic'（站酷快乐体，圆润饱满，
         短视频平台常见的"更漂亮"字幕大多是这类风格，跟海报标题是同一份字体）
     box_scheme: bg_box开启时用哪种配色，SUBTITLE_BOX_SCHEMES里的一个key
+    highlight_mode: 不传（None，默认）就还是按highlight_numbers这个老参数的开关决定要不要
+        做数字高亮，保持这个函数原来的行为，不影响任何现有调用方；传"keyword"的话，忽略
+        highlight_numbers，改成识别文字里AI已经标注好的【关键词】标记、转成高亮色——这是
+        真人口播视频后期自动化那条新流程专用的，跟数字高亮是互斥的两种模式，不会同时生效
     """
     # 'middle' 之前用的是ASS的"5"（正中心）对齐方式，这种对齐是按文字块的几何中心来定位的——
     # 一句话如果换行成1行还是2行，文字块整体高度不一样，"中心"对齐的结果就是每一句字幕的
@@ -627,6 +664,134 @@ def build_subtitle_ass(srt_content, out_path, font_size=76, position="bottom", c
         f.write("".join(lines))
     return event_count
 # ==================== 字幕生成函数结束 ====================
+
+
+# ==================== 真人口播视频后期自动化专用 ====================
+def prepare_talking_head_chunks(segments, font_size, canvas_w=1080):
+    """把whisper转写出的segments（每项是{"start":.., "end":.., "text":..}），切分成
+    适合单行显示的短语列表，每个短语带着自己的起止时间——切分和"按字数比例分配时间"这两步
+    直接复用split_text_into_single_line_chunks，跟现有"素材库拼接视频"那条路径用的是
+    同一套切分规则，只是这里把切分结果摊平成一个列表返回（而不是像build_subtitle_ass那样
+    切完立刻就地生成Dialogue行），因为后面还要插入一步"把这些短语的纯文字打包发给AI标注
+    关键词"，需要先拿到完整的短语列表才能打包。
+
+    返回：[{"text": "...", "start": 1.2, "end": 2.5}, ...]，text此时还是未经AI标注的原文
+    """
+    all_chunks = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = float(seg["start"]), float(seg["end"])
+        chunks = split_text_into_single_line_chunks(text, font_size, canvas_width=canvas_w)
+        total_chars = sum(len(c) for c in chunks) or 1
+        total_duration = max(0.01, end - start)
+        cursor = start
+        for i, chunk in enumerate(chunks):
+            chunk = chunk.strip("，。！？、,. ")
+            if not chunk:
+                continue
+            if i == len(chunks) - 1:
+                seg_end = end
+            else:
+                portion = len(chunk) / total_chars
+                seg_end = cursor + total_duration * portion
+            all_chunks.append({"text": chunk, "start": cursor, "end": seg_end})
+            cursor = seg_end
+    return all_chunks
+
+
+def build_talking_head_subtitle_ass(chunks, out_path, font_size=76, position="bottom", color_key="white",
+                                     bold=True, font_style="standard", canvas_w=1080, canvas_h=1920):
+    """把prepare_talking_head_chunks切分好、并且（可能）已经过AI标注关键词的短语列表，
+    转成最终的ASS字幕文件。每个chunk的text字段可能带有【关键词】标记（AI标注成功的句子），
+    也可能不带（AI标注失败时优雅降级、原样返回的句子）——统一调用apply_keyword_highlight
+    处理，没有标记的文字它会直接原样返回，两种情况都能正确处理，不需要额外判断
+    """
+    position_map = {"top": (8, 90), "middle": (2, 960), "lower": (2, 420), "bottom": (2, 110)}
+    scale_w = canvas_w / 1080
+    scale_h = canvas_h / 1920
+    scaled_font_size = round(font_size * scale_w)
+    alignment, margin_v = position_map.get(position, position_map["bottom"])
+    margin_v = round(margin_v * scale_h)
+    color_rgb = SUBTITLE_COLOR_MAP.get(color_key, SUBTITLE_COLOR_MAP["white"])
+    color_tag = rgb_to_ass_bgr(color_rgb)
+    highlight_tag = rgb_to_ass_bgr((255, 204, 0))  # 跟数字高亮、标题强调色统一用同一个金色
+    font_name = resolve_subtitle_font(font_style, bold)
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {canvas_w}\n"
+        f"PlayResY: {canvas_h}\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{font_name},{scaled_font_size},{color_tag},{color_tag},&H000000&,&H000000&,0,0,0,0,100,100,0,0,"
+        f"1,4,0,{alignment},{round(60*scale_w)},{round(60*scale_w)},{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines = [header]
+    event_count = 0
+    for c in chunks:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = c["start"], c["end"]
+        if end <= start:
+            continue
+        seg_text = apply_keyword_highlight(text, color_tag, highlight_tag)
+        this_margin_v = margin_v if position == "middle" else 0
+        lines.append(f"Dialogue: 0,{sec_to_ass_time(start)},{sec_to_ass_time(end)},Default,,0,0,{this_margin_v},,{seg_text}\n")
+        event_count += 1
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("".join(lines))
+    return event_count
+
+
+def transcribe_video_to_segments(video_path, workdir):
+    """从原始视频里提取音轨、用faster-whisper转写，返回带时间戳的segment列表
+    （不是SRT字符串——真人口播视频这条流程需要拿到结构化的segment数据，先切分成
+    单行短语、再打包给AI标关键词，跟transcribe_custom_voice_to_srt那个直接产出
+    SRT字符串的版本是不同的使用场景，所以单独写一个，不复用会导致语义混淆）
+    """
+    audio_path = os.path.join(workdir, "talking_head_audio.wav")
+    run(["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", audio_path])
+    from faster_whisper import WhisperModel
+    model = WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device=os.environ.get("WHISPER_DEVICE", "cpu"),
+                          compute_type=os.environ.get("WHISPER_COMPUTE_TYPE", "int8"))
+    segments, _ = model.transcribe(audio_path, language="zh", beam_size=5, vad_filter=True)
+    return [{"start": seg.start, "end": seg.end, "text": (seg.text or "").strip()} for seg in segments if (seg.text or "").strip()]
+
+
+def fetch_keyword_highlighted_chunks(chunks, batch_size=60):
+    """把prepare_talking_head_chunks切好的短语，分批打包发给Worker的AI标注接口，
+    拿到每个短语标注好【关键词】的版本，写回对应chunk的text字段。分批（而不是一次性
+    全发）是为了避免一次请求里塞入太多句子导致AI输出被截断、或者单次请求体过大；
+    某一批如果请求失败（网络问题、AI服务异常），这一批的短语保持原样不受影响，只是
+    没有高亮效果，不会导致整个视频生成任务失败——这是一个可以失败、失败了也只是
+    退化成"没有关键词高亮的普通字幕"，不是必须成功的关键步骤
+    """
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i + batch_size]
+        sentences = [c["text"] for c in batch]
+        try:
+            resp = requests.post(
+                f"{PAGES_BASE_URL}/api/subtitle-keyword-highlight",
+                json={"secret": RENDER_SECRET, "sentences": sentences},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("ok") and isinstance(data.get("marked"), list) and len(data["marked"]) == len(batch):
+                for c, marked_text in zip(batch, data["marked"]):
+                    c["text"] = marked_text
+        except Exception as e:
+            print(f"关键词高亮标注第{i//batch_size+1}批失败，这一批字幕保持普通样式：", e)
+    return chunks
+# ==================== 真人口播视频后期自动化专用结束 ====================
 
 
 def detect_rhythm_beats(audio_path, workdir, max_beats=160):
@@ -838,6 +1003,125 @@ def probe_render_metrics(path):
         return {}
 
 
+# ==================== 真人口播视频后期自动化：主流程 ====================
+def run_talking_head_pipeline(manifest):
+    """用户自己拍好的口播原片直接上传，这里只做后期：转写字幕→AI标关键词高亮→
+    烧字幕到原片上→可选叠加水印→截一帧当封面→上传→callback。跟"素材库拼接视频"
+    那条主流程完全独立，不共用中间产物、不涉及shots/TTS/BGM这些概念，出错了也是
+    独立的callback("failed", ...)，不会牵连到main()后面那条流程（因为这个函数
+    执行完就直接return，main()根本不会往下走）
+    """
+    raw_url = manifest.get("raw_footage_url")
+    if not raw_url:
+        raise RuntimeError("没有提供口播原片地址")
+
+    raw_path = f"{WORKDIR}/talking_head_raw.mp4"
+    r = fetch_with_retry(raw_url, timeout=180)  # 原片体积通常比素材库单个镜头大得多，超时时间给宽松一些
+    with open(raw_path, "wb") as f:
+        f.write(r.content)
+    print("原片下载完成，大小：", os.path.getsize(raw_path), "字节")
+
+    # 1. 提取音轨+语音识别，拿到带时间戳的句子列表
+    segments = transcribe_video_to_segments(raw_path, WORKDIR)
+    if not segments:
+        raise RuntimeError("语音识别没有提取出任何内容，请确认原片里有清晰的人声")
+    print(f"语音识别完成，共{len(segments)}句")
+
+    # 2. 切分成适合单行显示的短语（复用跟素材库拼接视频同一套切分规则）
+    subtitle_font_size = int(manifest.get("subtitle_size") or 76)
+    chunks = prepare_talking_head_chunks(segments, font_size=subtitle_font_size, canvas_w=1080)
+    print(f"切分出{len(chunks)}个短语")
+
+    # 3. AI关键词高亮——默认开启，但可以在提交任务的时候关掉（比如想要更朴素、
+    # 不带强调色的字幕风格），这一步本身失败也不影响后面继续往下走（优雅降级）
+    if manifest.get("highlight_keywords", True):
+        try:
+            chunks = fetch_keyword_highlighted_chunks(chunks)
+        except Exception as e:
+            print("关键词高亮整体失败，字幕会正常生成、只是没有高亮效果：", e)
+
+    # 4. 生成最终字幕文件
+    subtitle_ass_path = f"{WORKDIR}/talking_head_subtitle.ass"
+    event_count = build_talking_head_subtitle_ass(
+        chunks, subtitle_ass_path,
+        font_size=subtitle_font_size,
+        position=manifest.get("subtitle_position") or "bottom",
+        color_key=manifest.get("subtitle_color") or "white",
+        bold=True,
+        font_style=manifest.get("subtitle_font_style") or "standard",
+        canvas_w=1080, canvas_h=1920,
+    )
+    print(f"字幕文件生成完成，共{event_count}条")
+
+    # 5. 把字幕烧录到原片上——原片本身的画面、音轨都不动，只是叠一层字幕
+    subtitled_path = f"{WORKDIR}/talking_head_subtitled.mp4"
+    run([
+        "ffmpeg", "-y", "-i", raw_path,
+        "-vf", f"subtitles={subtitle_ass_path}:fontsdir={FONTS_DIR}",
+        "-c:a", "copy",
+        subtitled_path,
+    ])
+
+    # 6. 叠加水印（如果开启了的话）——跟"素材库拼接视频"那条路径共用完全相同的
+    # 参数含义和滤镜写法，用户在两条流程里配置水印的体验是一致的；这里只处理图片
+    # 水印这一种（文字水印如果需要，后续可以照着素材库那条路径的写法照搬一份，
+    # 这次先把最常用的图片水印跑通）
+    enable_watermark = manifest.get("enable_watermark") is True or manifest.get("enable_watermark") == 1
+    watermark_url = manifest.get("watermark_url")
+    if enable_watermark and watermark_url:
+        try:
+            watermark_src_path = f"{WORKDIR}/watermark_src.png"
+            wm_resp = fetch_with_retry(watermark_url, timeout=30)
+            with open(watermark_src_path, "wb") as f:
+                f.write(wm_resp.content)
+            watermarked_path = f"{WORKDIR}/talking_head_watermarked.mp4"
+            watermark_scale = float(manifest.get("watermark_scale") or 0.15)
+            watermark_opacity = float(manifest.get("watermark_opacity") or 0.8)
+            position_map = {
+                "top-left": "20:20", "top-right": "W-w-20:20",
+                "bottom-left": "20:H-h-20", "bottom-right": "W-w-20:H-h-20",
+                "center": "(W-w)/2:(H-h)/2",
+            }
+            overlay_pos = position_map.get(manifest.get("watermark_position"), position_map["bottom-right"])
+            run([
+                "ffmpeg", "-y", "-i", subtitled_path, "-i", watermark_src_path,
+                "-filter_complex",
+                f"[1:v]scale={round(1080 * watermark_scale)}:-2,format=rgba,"
+                f"colorchannelmixer=aa={watermark_opacity}[wm];"
+                f"[0:v][wm]overlay={overlay_pos}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                watermarked_path,
+            ])
+            subtitled_path = watermarked_path
+            print("水印叠加完成")
+        except Exception as e:
+            print("水印叠加失败，跳过（不影响视频正常生成）：", e)
+
+    # 7. 上传最终视频
+    s3 = s3_client()
+    video_key = f"videos/{TASK_ID}_final.mp4"
+    s3.upload_file(subtitled_path, R2_BUCKET_NAME, video_key, ExtraArgs={"ContentType": "video/mp4"})
+    video_url = f"{R2_PUBLIC_BASE_URL}/{video_key}"
+    print("视频上传完成：", video_url)
+
+    # 8. 封面直接从成片里截一帧——这条流程本身就是"用户的真实原片"，不需要像
+    # 素材库拼接视频那样用AI多候选打分选最优帧，原片本身的画面已经是真实、
+    # 有说服力的内容，截一帧够用，没必要为了这个再多打一次AI调用
+    cover_url = None
+    try:
+        cover_path = f"{WORKDIR}/talking_head_cover.jpg"
+        run(["ffmpeg", "-y", "-ss", "0.8", "-i", subtitled_path, "-frames:v", "1", "-vf", "scale=480:-1", cover_path])
+        cover_key = f"videos/{TASK_ID}_cover.jpg"
+        s3.upload_file(cover_path, R2_BUCKET_NAME, cover_key, ExtraArgs={"ContentType": "image/jpeg"})
+        cover_url = f"{R2_PUBLIC_BASE_URL}/{cover_key}"
+    except Exception as e:
+        print("封面截取失败，视频本身不受影响：", e)
+
+    callback("succeeded", video_url=video_url, cover_url=cover_url)
+    print("真人口播视频后期处理完成：", video_url)
+# ==================== 真人口播视频后期自动化：主流程结束 ====================
+
+
 def main():
     os.makedirs(WORKDIR, exist_ok=True)
 
@@ -851,6 +1135,14 @@ def main():
     manifest = resp.json()
     if not manifest.get("ok"):
         raise RuntimeError(manifest.get("message", "获取任务清单失败"))
+
+    # "真人口播视频后期自动化"是完全独立的一条流程——用户自己拍好的原片直接上传，
+    # 这边只负责转写字幕+关键词高亮+叠加水印，不涉及素材库拼接、不涉及shots分镜、
+    # 不涉及TTS配音，所以要在下面"没有shots就报错"这个检查之前先分流出去，走完
+    # 整条独立流程直接return，不会执行到后面那些为"素材库拼接"设计的逻辑
+    if manifest.get("content_source") == "raw_footage":
+        run_talking_head_pipeline(manifest)
+        return
 
     shots = manifest["shots"]
     if not shots:
