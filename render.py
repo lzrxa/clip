@@ -864,51 +864,67 @@ def transcribe_custom_voice_to_srt(audio_path,out_path):
 
 
 def make_shot_clip(i, shot, duration, canvas_w=1080, canvas_h=1920):
-    """生成单个镜头的标准化片段（尺寸跟着canvas_w/canvas_h走，默认还是原来的竖屏1080x1920）。
-    图片素材加 Ken Burns 缓慢缩放效果，避免死画面。"""
+    """生成标准化镜头，并消费 v269 AI镜头运动导演方案。
+    运动只做轻量Ken-Burns/裁切平移，不改变素材事实、播放速度或镜头时长。"""
     asset_url = shot["asset_url"]
     asset_type = shot.get("asset_type") or "video"
     ext = "mp4" if asset_type == "video" else "jpg"
     src_path = f"{WORKDIR}/src_{i}.{ext}"
     clip_path = f"{WORKDIR}/clip_{i}.mp4"
-
     r = fetch_with_retry(asset_url, timeout=60)
-    with open(src_path, "wb") as f:
-        f.write(r.content)
-
+    with open(src_path, "wb") as f: f.write(r.content)
     fps = 30
-    if asset_type == "video":
-        # 找到了"选了横屏、素材还是竖屏"这个问题的真正原因：这里之前用的是"整体缩小+补黑边"
-        # （force_original_aspect_ratio=decrease + pad），这种方式会完整保留素材原始画面、
-        # 不裁掉任何内容，但代价是如果素材本身的宽高比例跟选的输出比例差得比较多（比如
-        # 竖拍的视频放进横屏画布），画面中间只会有一小块，周围一圈都是黑边——这套系统
-        # 从一开始就只支持9:16，用户素材库里积累的视频大概率本来就是竖拍的，选竖屏（9:16）
-        # 的时候这个问题基本不会被注意到（源素材和目标画布比例本来就接近），但选横屏/方形
-        # 之后，只要素材本身是竖着拍的，就会变成"画面中间一小块、周围一圈黑"，看起来就像
-        # "素材还是竖屏"。改成跟下面图片素材同样的"放大填满+裁掉多余部分"（increase + crop，
-        # 效果类似网页里的object-fit: cover），画面会撑满整个画布，代价是原始画面四周会被
-        # 裁掉一部分——这是短视频平台清一色的标准做法，比"完整保留但周围一圈黑边"更符合预期
-        vf = f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},setsar=1"
-        run([
-            "ffmpeg", "-y", "-stream_loop", "-1", "-i", src_path,
-            "-t", str(duration), "-vf", vf, "-r", str(fps),
-            "-an", "-pix_fmt", "yuv420p", clip_path,
-        ])
-    else:
-        frames = max(1, round(duration * fps))
-        # Ken Burns：缓慢放大，避免图片素材是一张死画面
-        vf = (
-            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
-            f"crop={canvas_w}:{canvas_h},"
-            f"zoompan=z='min(zoom+0.0012,1.15)':d={frames}:s={canvas_w}x{canvas_h}:fps={fps},setsar=1"
-        )
-        run([
-            "ffmpeg", "-y", "-loop", "1", "-i", src_path,
-            "-vf", vf, "-frames:v", str(frames), "-r", str(fps),
-            "-pix_fmt", "yuv420p", clip_path,
-        ])
-    return clip_path
+    md = shot.get("motion_director") or {}
+    motion = str(md.get("motion") or "").lower()
+    intensity = str(md.get("intensity") or "low").lower()
+    focus = str(md.get("focus") or "center").lower()
+    amp = {"low":0.055,"medium":0.085,"high":0.115}.get(intensity,0.055)
+    if motion in ("none", "hold", ""):
+        amp = 0.025 if motion == "hold" else 0.0
 
+    if asset_type == "video":
+        # 视频只做轻微“镜头语言”模拟：先cover到略大于画布，再缓慢裁切平移。
+        # 不变速、不循环额外素材，避免真实视频被加工成假慢动作。
+        extra = 1.0 + amp
+        sw, sh = max(canvas_w, int(canvas_w*extra)), max(canvas_h, int(canvas_h*extra))
+        base = f"scale={sw}:{sh}:force_original_aspect_ratio=increase,crop={sw}:{sh}"
+        if motion in ("video_pan_left","pan_left"):
+            x=f"(iw-ow)*(1-min(max(t/{max(duration,0.1):.3f},0),1))"
+            y="(ih-oh)/2"
+        elif motion in ("video_pan_right","pan_right"):
+            x=f"(iw-ow)*min(max(t/{max(duration,0.1):.3f},0),1)"
+            y="(ih-oh)/2"
+        elif motion == "video_follow":
+            x=f"(iw-ow)*0.5+sin(t*0.45)*(iw-ow)*0.25"
+            y=f"(ih-oh)*0.5+sin(t*0.32)*(ih-oh)*0.12"
+        else:
+            x="(iw-ow)/2"; y="(ih-oh)/2"
+        vf=f"{base},crop={canvas_w}:{canvas_h}:x='{x}':y='{y}',setsar=1"
+        run(["ffmpeg","-y","-stream_loop","-1","-i",src_path,"-t",str(duration),"-vf",vf,"-r",str(fps),"-an","-pix_fmt","yuv420p",clip_path])
+    else:
+        frames=max(1,round(duration*fps))
+        # 图片统一先放大到可运动的安全尺寸，再用zoompan做轻微推拉/平移。
+        z0=1.0
+        if motion == "zoom_in": z_expr=f"min(1+{amp:.4f}*on/{max(frames-1,1)},1+{amp:.4f})"
+        elif motion == "zoom_out": z_expr=f"1+{amp:.4f}*(1-on/{max(frames-1,1)})"
+        elif motion == "pan_left": z_expr=f"1+{max(amp*0.85,0.035):.4f}"
+        elif motion == "pan_right": z_expr=f"1+{max(amp*0.85,0.035):.4f}"
+        elif motion in ("pan_up","pan_down","drift"): z_expr=f"1+{max(amp*0.75,0.03):.4f}"
+        else: z_expr="1.04"
+        # x/y表达式使用zoompan当前帧on，避免主体被甩出安全区。
+        panx="(iw-iw/zoom)/2"; pany="(ih-ih/zoom)/2"
+        if motion == "pan_left": panx="(iw-iw/zoom)*(0.72-0.44*on/"+str(max(frames-1,1))+")"
+        elif motion == "pan_right": panx="(iw-iw/zoom)*(0.28+0.44*on/"+str(max(frames-1,1))+")"
+        elif motion == "pan_up": pany="(ih-ih/zoom)*(0.72-0.44*on/"+str(max(frames-1,1))+")"
+        elif motion == "pan_down": pany="(ih-ih/zoom)*(0.28+0.44*on/"+str(max(frames-1,1))+")"
+        elif motion == "drift":
+            panx="(iw-iw/zoom)*(0.5+0.16*sin(on/"+str(max(frames-1,1))+"*6.283))"
+            pany="(ih-ih/zoom)*(0.5+0.10*sin(on/"+str(max(frames-1,1))+"*3.1416))"
+        vf=(f"scale={canvas_w*2}:{canvas_h*2}:force_original_aspect_ratio=increase,"
+            f"crop={canvas_w*2}:{canvas_h*2},"
+            f"zoompan=z='{z_expr}':x='{panx}':y='{pany}':d={frames}:s={canvas_w}x{canvas_h}:fps={fps},setsar=1")
+        run(["ffmpeg","-y","-loop","1","-i",src_path,"-vf",vf,"-frames:v",str(frames),"-r",str(fps),"-pix_fmt","yuv420p",clip_path])
+    return clip_path
 
 
 def build_transitioned_video(clip_paths, durations, out_path, style="fade", transition_duration=0.35):
@@ -935,6 +951,76 @@ def build_transitioned_video(clip_paths, durations, out_path, style="fade", tran
     cmd=["ffmpeg","-y",*inputs,"-filter_complex",";".join(filters),"-map",f"[{current}]","-an","-c:v","libx264","-preset","veryfast","-crf","20","-pix_fmt","yuv420p",out_path]
     run(cmd)
     return True
+
+
+def apply_visual_style(input_path, output_path, visual_style):
+    """v270统一视觉人格：只做克制的色彩/对比度微调，不改变真实素材内容。"""
+    if not visual_style:
+        return False
+    style = str(visual_style.get("style_name") or "clean").lower()
+    grade = str(visual_style.get("grade") or "natural").lower()
+    palette = str(visual_style.get("palette") or "natural").lower()
+    presets = {
+        "cinematic": {"contrast":1.035,"saturation":0.96,"brightness":-0.008,"gamma":1.0,"warm":0},
+        "viral": {"contrast":1.075,"saturation":1.08,"brightness":0.004,"gamma":1.0,"warm":0},
+        "documentary": {"contrast":1.02,"saturation":0.98,"brightness":0.0,"gamma":1.0,"warm":0},
+        "healing": {"contrast":0.98,"saturation":0.94,"brightness":0.012,"gamma":1.02,"warm":0},
+        "sales": {"contrast":1.06,"saturation":1.04,"brightness":0.002,"gamma":1.0,"warm":0},
+        "clean": {"contrast":1.02,"saturation":1.0,"brightness":0.0,"gamma":1.0,"warm":0},
+    }
+    q=presets.get(style,presets["clean"]).copy()
+    if grade == "soft": q["contrast"]*=0.985; q["saturation"]*=0.97
+    elif grade == "vivid": q["contrast"]*=1.015; q["saturation"]*=1.025
+    elif grade == "cinematic": q["contrast"]*=1.01; q["saturation"]*=0.985
+    if palette == "warm": q["saturation"]*=1.01
+    elif palette == "cool": q["saturation"]*=0.99
+    elif palette == "high_contrast": q["contrast"]*=1.015
+    vf=f"eq=contrast={q['contrast']:.4f}:brightness={q['brightness']:.4f}:saturation={q['saturation']:.4f}:gamma={q['gamma']:.4f}"
+    try:
+        run(["ffmpeg","-y","-i",input_path,"-vf",vf,"-c:v","libx264","-preset","veryfast","-crf","20","-c:a","copy",output_path])
+        return True
+    except Exception as e:
+        print("视觉风格处理失败，保留原片：",e)
+        return False
+
+
+def build_audio_director_volume_expression(audio_director, shots, durations, total_duration):
+    """v271：把AI视听总导演的“段落能量”转换成FFmpeg音量表达式。
+    不改变BGM文件本身，只在混音时按镜头组做轻量的音量起伏，并叠加开头/结尾淡入淡出。
+    """
+    if not audio_director or not isinstance(audio_director, dict):
+        return "1"
+    sections = audio_director.get("sections") or []
+    shot_starts = {}
+    cursor = 0.0
+    for shot, dur in zip(shots, durations):
+        order = int(shot.get("shot_order") or 0)
+        shot_starts[order] = (cursor, cursor + float(dur))
+        cursor += float(dur)
+    pieces = []
+    for sec in sections:
+        try:
+            a = int(sec.get("start_shot")); b = int(sec.get("end_shot"))
+            factor = max(0.55, min(1.10, float(sec.get("volume_factor", 0.85))))
+        except (TypeError, ValueError):
+            continue
+        matched = [v for o,v in shot_starts.items() if a <= o <= b]
+        if not matched:
+            continue
+        start = min(v[0] for v in matched); end = max(v[1] for v in matched)
+        pieces.append((start, end, factor))
+    # 从后往前构造嵌套if，避免依赖额外filter。
+    expr = "1"
+    for start, end, factor in reversed(pieces):
+        expr = f"if(between(t,{start:.3f},{end:.3f}),{factor:.3f},{expr})"
+    intro = max(0.0, min(4.0, float(audio_director.get("intro_sec") or 0)))
+    outro = max(0.0, min(4.0, float(audio_director.get("outro_fade_sec") or 0)))
+    total = max(0.1, float(total_duration or cursor or 0.1))
+    if intro > 0.05:
+        expr = f"if(lt(t,{intro:.3f}),min(1,{expr}*t/{intro:.3f}),{expr})"
+    if outro > 0.05 and total > outro + 0.05:
+        expr = f"if(gt(t,{total-outro:.3f}),min(1,{expr}*({total:.3f}-t)/{outro:.3f}),{expr})"
+    return expr
 
 
 def strengthen_hook(input_path, output_path, duration_sec=3.0):
@@ -1239,6 +1325,8 @@ def main():
     audio_ducking=bool(manifest.get("audio_ducking",True))
     hook_emphasis=bool(manifest.get("hook_emphasis",True))
     smart_cover=bool(manifest.get("smart_cover",True))
+    visual_style=manifest.get("visual_style") or {}
+    audio_visual_director=manifest.get("audio_visual_director") or {}
 
     # 视频水印/Logo：/api/render-manifest那边已经把enable_watermark和watermark_url
     # 绑在一起判断过了（水印素材文件真的存在才会是true），这里直接信任这个结果，
@@ -1348,6 +1436,10 @@ def main():
         planned_durations=align_durations_to_beats(planned_durations,rhythm_beats,sum(planned_durations))
         print("节拍同步后的镜头时长：",[round(x,2) for x in planned_durations])
 
+    audio_director_expr = build_audio_director_volume_expression(audio_visual_director, shots, planned_durations, sum(planned_durations))
+    if audio_visual_director:
+        print("v271视听联动：BGM基础音量=", bgm_volume, "· 段落音量表达式已启用")
+
     # xfade会让相邻镜头重叠 d 秒，因此直接拿原计划时长做转场会让最终视频
     # 比配音短 (镜头数-1)*d。这里先把各镜头总时长按比例放大，再由xfade扣掉重叠，
     # 保证转场后的成片长度仍然等于原来的目标时长，字幕/配音不会出现尾部不同步。
@@ -1384,6 +1476,16 @@ def main():
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", clip_list_path,
             "-c", "copy", concat_path,
         ])
+
+    # v270：统一视觉风格。放在镜头拼接之后、字幕之前，保证整片色调一致。
+    if visual_style:
+        try:
+            style_path=f"{WORKDIR}/visual_style.mp4"
+            if apply_visual_style(concat_path, style_path, visual_style):
+                concat_path=style_path
+                print("AI视觉风格应用完成：", visual_style.get("style_name"))
+        except Exception as e:
+            print("AI视觉风格应用失败，跳过：", e)
 
     # V3.0第三阶段：黄金开头强化。只处理视频前几秒，失败则保留原片。
     if hook_emphasis and len(clip_paths) > 0:
@@ -1628,7 +1730,7 @@ def main():
         if bgm_ready_path:
             run([
                 "ffmpeg", "-y", "-i", subtitled_path, "-i", bgm_ready_path,
-                "-filter_complex", f"[1:a]volume={bgm_volume}[bgm_out]",
+                "-filter_complex", f"[1:a]volume='{bgm_volume}*({audio_director_expr})'[bgm_out]",
                 "-map", "0:v", "-map", "[bgm_out]",
                 "-c:v", "copy", "-c:a", "aac", "-shortest", final_path,
             ])
@@ -1647,14 +1749,14 @@ def main():
             duck_filter=(
                 f"[1:a]volume={voice_volume}[voice_raw];"
                 "[voice_raw]asplit=2[voice_side][voice_mix];"
-                f"[2:a]volume=1.0[bgm_base];"
+                f"[2:a]volume='{bgm_volume}*({audio_director_expr})'[bgm_base];"
                 "[bgm_base][voice_side]sidechaincompress=threshold=0.035:ratio=8:attack=18:release=320:makeup=1[bgm_ducked];"
                 "[voice_mix][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=2[aout]"
             )
         else:
             duck_filter=(
                 f"[1:a]volume={voice_volume}[voice_adj];"
-                f"[2:a]volume={bgm_volume}[bgm_adj];"
+                f"[2:a]volume='{bgm_volume}*({audio_director_expr})'[bgm_adj];"
                 "[voice_adj][bgm_adj]amix=inputs=2:duration=first:dropout_transition=2[aout]"
             )
         run([
