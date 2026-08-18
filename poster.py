@@ -3,6 +3,7 @@ import re
 import sys
 import textwrap
 import time
+import urllib.parse
 from io import BytesIO
 import requests
 import boto3
@@ -255,12 +256,13 @@ def callback(status, poster_url=None, poster_url_square=None, error=None):
 
 
 def fetch_manifest():
-    resp = requests.get(
-        f"{PAGES_BASE_URL}/api/poster-manifest",
-        params={"poster_id": POSTER_ID, "secret": RENDER_SECRET},
-        timeout=30,
+    # v273.20：跟render.py那边v273.15修的是同一类问题——原来是timeout=30、不重试的
+    # 裸调用，Worker那边整理这份数据偶尔会慢一点，改成用已有的fetch_with_retry，超时
+    # 放宽到90秒、失败自动重试，不再是一次读超时就直接判定整张海报生成失败。
+    manifest_url = f"{PAGES_BASE_URL}/api/poster-manifest?" + urllib.parse.urlencode(
+        {"poster_id": POSTER_ID, "secret": RENDER_SECRET}
     )
-    resp.raise_for_status()
+    resp = fetch_with_retry(manifest_url, timeout=90, max_retries=2)
     data = resp.json()
     if not data.get("ok"):
         raise RuntimeError(data.get("message", "获取海报任务数据失败"))
@@ -278,18 +280,33 @@ def get_background(manifest):
             f"abstract elegant poster background, {manifest.get('title', '')}, "
             "soft gradient, minimal illustration style, no text, no letters, no words, vertical composition"
         )
-        resp = requests.post(
-            "https://api.siliconflow.cn/v1/images/generations",
-            headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "black-forest-labs/FLUX.1-schnell",
-                "prompt": prompt,
-                "image_size": "1024x1792",
-                "num_inference_steps": 4,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
+        # v273.20：这个调用之前是裸调用不重试——AI绘图接口本身偶尔会有排队/超时这种
+        # 一次性抖动，跟拉取清单是同一类"网络偶尔抖一下不代表真的不行"的问题，加一层
+        # 轻量重试（2次，指数退避），不再是一次网络波动就让整张海报直接失败。
+        last_bg_error = None
+        resp = None
+        for attempt in range(1, 3):
+            try:
+                resp = requests.post(
+                    "https://api.siliconflow.cn/v1/images/generations",
+                    headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "black-forest-labs/FLUX.1-schnell",
+                        "prompt": prompt,
+                        "image_size": "1024x1792",
+                        "num_inference_steps": 4,
+                    },
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                last_bg_error = None
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_bg_error = e
+                print(f"AI背景生成请求失败（第{attempt}次，{type(e).__name__}），重试一次：", e)
+                time.sleep(3 * attempt)
+        if last_bg_error:
+            raise last_bg_error
         data = resp.json()
         img_url = None
         if data.get("images"):
