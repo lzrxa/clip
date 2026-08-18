@@ -36,11 +36,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      # v273.23：跟另外两个工作流一样，加apt包缓存。
+      - name: 缓存apt软件包（避免每次都重新下载ffmpeg这269MB依赖）
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-scenesplit-${{ runner.os }}-v1
+
       - name: 安装依赖（ffmpeg + 上传/回调/AI识别所需库）
         run: |
           sudo apt-get update -y
-          # v273.22：同样加上--no-install-recommends，跳过ffmpeg默认会带的显卡驱动/GTK插件
-          # 这些纯后台服务器用不上的推荐依赖，缩短安装时间。
           sudo apt-get install -y --no-install-recommends ffmpeg
           pip install --quiet requests boto3
 
@@ -68,6 +73,8 @@ jobs:
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: |
-          curl -s -X POST "$PAGES_BASE_URL/api/scene-split-callback" \
+          # v273.24：跟另外两个工作流同样的修复。
+          status_code=$(curl -s -L -o /dev/null -w "%{http_code}" -X POST "$PAGES_BASE_URL/api/scene-split-callback" \
             -H "Content-Type: application/json" \
-            -d "{\"job_id\": \"$JOB_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"拆条步骤执行失败，请查看 GitHub Actions 日志\"}"
+            -d "{\"job_id\": \"$JOB_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"拆条步骤执行失败，请查看 GitHub Actions 日志\"}")
+          echo "通知Cloudflare的回调HTTP状态码：$status_code"

@@ -25,12 +25,17 @@ jobs:
         with:
           python-version: '3.11'
 
+      # v273.23：跟poster.yml一样，加apt包缓存——VA-API/VDPAU/OpenCL这些硬件加速库是
+      # ffmpeg核心组件的硬依赖，--no-install-recommends砍不掉，真正省时间要靠不重复下载。
+      - name: 缓存apt软件包（避免每次都重新下载ffmpeg这269MB依赖）
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-render-${{ runner.os }}-v1
+
       - name: 安装依赖（ffmpeg + 中文字体 + edge-tts + 上传/回调所需库）
         run: |
           sudo apt-get update -y
-          # v273.22：跟poster.yml同样的问题——ffmpeg在Ubuntu 24.04上默认会带上mesa显卡驱动、
-          # VA-API硬件加速、GTK插件这些"推荐"依赖，纯后台无显示器的渲染服务器用不上，加上
-          # --no-install-recommends只装核心必需依赖，明显缩短这一步的下载时间。
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-color-emoji
           pip install --quiet edge-tts requests boto3 Pillow
 
@@ -83,6 +88,9 @@ jobs:
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: |
-          curl -s -X POST "$PAGES_BASE_URL/api/render-callback" \
+          # v273.24：跟poster.yml同样的问题——裸curl遇到重定向会静默丢失真正的回调，
+          # 加-L跟着跳转走完，同时打印最终状态码方便排查。
+          status_code=$(curl -s -L -o /dev/null -w "%{http_code}" -X POST "$PAGES_BASE_URL/api/render-callback" \
             -H "Content-Type: application/json" \
-            -d "{\"task_id\": \"$TASK_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"渲染步骤执行失败，请查看 GitHub Actions 日志\"}"
+            -d "{\"task_id\": \"$TASK_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"渲染步骤执行失败，请查看 GitHub Actions 日志\"}")
+          echo "通知Cloudflare的回调HTTP状态码：$status_code"
