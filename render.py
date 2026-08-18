@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 import wave
 import requests
 from PIL import Image, ImageStat
@@ -1212,12 +1213,16 @@ def main():
     os.makedirs(WORKDIR, exist_ok=True)
 
     # 1. 拉取该任务的分镜清单（含匹配好的素材、选题、bgm_mood）
-    resp = requests.get(
-        f"{PAGES_BASE_URL}/api/render-manifest",
-        params={"task_id": TASK_ID, "secret": RENDER_SECRET},
-        timeout=30,
+    # v273.15：这里原来是timeout=30、不重试的裸调用——这一步在Worker那边其实不轻，
+    # 需要给每个镜头的素材做健康探测，遇到失效的素材还要现场联网搜替代品，正常情况下
+    # 很快，但偶尔（比如好几个镜头的素材同时失效需要修复）会超过30秒。跟callback()
+    # 用的是同一套"网络抖动不代表真的不行，退避重试几次"的思路，这里也改成用
+    # fetch_with_retry，超时放宽到90秒、失败自动重试，不再是一次读超时就直接判定
+    # 整条视频生成失败
+    manifest_url = f"{PAGES_BASE_URL}/api/render-manifest?" + urllib.parse.urlencode(
+        {"task_id": TASK_ID, "secret": RENDER_SECRET}
     )
-    resp.raise_for_status()
+    resp = fetch_with_retry(manifest_url, timeout=90, max_retries=2)
     manifest = resp.json()
     if not manifest.get("ok"):
         raise RuntimeError(manifest.get("message", "获取任务清单失败"))
