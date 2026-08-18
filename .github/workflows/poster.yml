@@ -25,7 +25,13 @@ jobs:
       - name: 安装依赖（ffmpeg + 中文字体 + Pillow + 二维码库）
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-noto-cjk-extra
+          # v273.22：这一步之前经常要下载190多个软件包、耗时好几分钟——排查发现ffmpeg在
+          # Ubuntu 24.04上默认会把一大堆"推荐"依赖也一起装上，包括mesa显卡驱动、VA-API硬件
+          # 加速、GTK界面插件这些东西。这些都是给"有显示器、要在屏幕上播放视频"的场景准备的，
+          # 这里是纯后台服务器上跑ffmpeg做转码/合成，压根用不上任何一个，白白占用下载时间。
+          # 加上--no-install-recommends，只装ffmpeg真正运行所必需的核心依赖，不装这些用不到
+          # 的推荐包，能省下大部分下载量，这一步应该会明显变快。
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fonts-noto-cjk-extra
           pip install --quiet requests boto3 Pillow qrcode
 
       - name: 下载海报标题艺术字体（站酷快乐体，Google Fonts官方OFL开源协议分发，免费商用）
