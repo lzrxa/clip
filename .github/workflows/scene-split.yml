@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: ''
+      run_id:
+        description: '本次拆条的回调幂等ID，用于忽略被取消的旧任务回调'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   scene-split:
@@ -41,7 +46,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-scenesplit-${{ runner.os }}-v1
+          key: apt-ffmpeg-noto-ubuntu-v1
 
       - name: 安装依赖（ffmpeg + 上传/回调/AI识别所需库）
         run: |
@@ -55,6 +60,7 @@ jobs:
           SOURCE_KEY: ${{ inputs.source_key }}
           TASK_DOMAIN: ${{ inputs.task_domain }}
           TASK_REGION: ${{ inputs.task_region }}
+          RUN_ID: ${{ inputs.run_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -70,11 +76,37 @@ jobs:
         if: failure() || cancelled()
         env:
           JOB_ID: ${{ inputs.job_id }}
+          RUN_ID: ${{ inputs.run_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: |
-          # v273.24：跟另外两个工作流同样的修复。
-          status_code=$(curl -s -L -o /dev/null -w "%{http_code}" -X POST "$PAGES_BASE_URL/api/scene-split-callback" \
+          # v273.25：不再用 -L 跟随 301/302，密钥改走请求头，并附带 run_id。
+          BASE="${PAGES_BASE_URL:-}"
+          BASE="${BASE%/}"
+          case "$BASE" in
+            http://*) BASE="https://${BASE#http://}" ;;
+            https://*) ;;
+            *) BASE="https://$BASE" ;;
+          esac
+          STATUS="failed"
+          ERR="拆条步骤执行失败，请查看 GitHub Actions 日志"
+          if [ "${{ job.status }}" = "cancelled" ]; then
+            STATUS="cancelled"
+            ERR="拆条任务被取消或超时（若已重新触发，这次通知会被忽略）"
+          fi
+          RUN_JSON=""
+          if [ -n "${RUN_ID}" ]; then
+            RUN_JSON=", \"run_id\": \"${RUN_ID}\""
+          fi
+          set +e
+          status_code=$(curl -sS --max-redirs 0 -o /tmp/cb_body -w "%{http_code}" -X POST "$BASE/api/scene-split-callback" \
             -H "Content-Type: application/json" \
-            -d "{\"job_id\": \"$JOB_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"拆条步骤执行失败，请查看 GitHub Actions 日志\"}")
-          echo "通知Cloudflare的回调HTTP状态码：$status_code"
+            -H "X-Render-Secret: $RENDER_SECRET" \
+            -d "{\"job_id\": \"$JOB_ID\"${RUN_JSON}, \"status\": \"$STATUS\", \"error\": \"$ERR\"}")
+          curl_exit=$?
+          set -e
+          echo "通知Cloudflare的回调HTTP状态码：$status_code（curl exit=$curl_exit）"
+          if [ -f /tmp/cb_body ]; then echo "回调响应：$(head -c 300 /tmp/cb_body)"; fi
+          if [ "$status_code" = "301" ] || [ "$status_code" = "302" ] || [ "$status_code" = "303" ] || [ "$status_code" = "307" ] || [ "$status_code" = "308" ]; then
+            echo "PAGES_BASE_URL 发生重定向，请把 GitHub Secret 改成最终 https 地址。本次未能同步状态。"
+          fi

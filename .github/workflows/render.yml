@@ -7,6 +7,11 @@ on:
         description: '要渲染的任务ID'
         required: true
         type: string
+      run_id:
+        description: '本次渲染的回调幂等ID，用于忽略被取消的旧任务回调'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   render:
@@ -31,7 +36,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-render-${{ runner.os }}-v1
+          key: apt-ffmpeg-noto-ubuntu-v1
 
       - name: 安装依赖（ffmpeg + 中文字体 + edge-tts + 上传/回调所需库）
         run: |
@@ -56,17 +61,21 @@ jobs:
       - name: 下载字幕艺术字体（Google Fonts官方OFL开源协议分发，免费商用）
         run: |
           mkdir -p fonts
-          curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
-          curl -sL --fail -o fonts/ZCOOLQingKeHuangYou-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf"
-          curl -sL --fail -o fonts/ZCOOLXiaoWei-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf"
-          curl -sL --fail -o fonts/MaShanZheng-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf"
-          curl -sL --fail -o fonts/ZhiMangXing-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf"
-          curl -sL --fail -o fonts/LongCang-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf"
-          curl -sL --fail -o fonts/LiuJianMaoCao-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf"
+          download_font() {
+            curl -sL --fail --retry 2 --max-time 30 -o "$2" "$1" || echo "WARN: 未能下载 $2，将回退系统已安装的 Noto 字体"
+          }
+          download_font "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf" fonts/ZCOOLKuaiLe-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf" fonts/ZCOOLQingKeHuangYou-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf" fonts/ZCOOLXiaoWei-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf" fonts/MaShanZheng-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf" fonts/ZhiMangXing-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf" fonts/LongCang-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf" fonts/LiuJianMaoCao-Regular.ttf
 
       - name: 执行渲染
         env:
           TASK_ID: ${{ inputs.task_id }}
+          RUN_ID: ${{ inputs.run_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -85,12 +94,39 @@ jobs:
         if: failure() || cancelled()
         env:
           TASK_ID: ${{ inputs.task_id }}
+          RUN_ID: ${{ inputs.run_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: |
-          # v273.24：跟poster.yml同样的问题——裸curl遇到重定向会静默丢失真正的回调，
-          # 加-L跟着跳转走完，同时打印最终状态码方便排查。
-          status_code=$(curl -s -L -o /dev/null -w "%{http_code}" -X POST "$PAGES_BASE_URL/api/render-callback" \
+          # v273.25：不再用 -L 跟随 301/302。curl 跟随跳转会把 POST 变成 GET，密钥和状态都送不到接口。
+          # 这里把地址规范成 https，遇到重定向直接失败并打印 Location，提醒把 PAGES_BASE_URL 改成最终地址。
+          # 密钥只放在 X-Render-Secret 请求头；带上 run_id，这样被新任务取消的旧回调会被 Worker 忽略。
+          BASE="${PAGES_BASE_URL:-}"
+          BASE="${BASE%/}"
+          case "$BASE" in
+            http://*) BASE="https://${BASE#http://}" ;;
+            https://*) ;;
+            *) BASE="https://$BASE" ;;
+          esac
+          STATUS="failed"
+          ERR="渲染步骤执行失败，请查看 GitHub Actions 日志"
+          if [ "${{ job.status }}" = "cancelled" ]; then
+            STATUS="cancelled"
+            ERR="渲染任务被取消或超时（若已重新触发，这次通知会被忽略）"
+          fi
+          RUN_JSON=""
+          if [ -n "${RUN_ID}" ]; then
+            RUN_JSON=", \"run_id\": \"${RUN_ID}\""
+          fi
+          set +e
+          status_code=$(curl -sS --max-redirs 0 -o /tmp/cb_body -w "%{http_code}" -X POST "$BASE/api/render-callback" \
             -H "Content-Type: application/json" \
-            -d "{\"task_id\": \"$TASK_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"渲染步骤执行失败，请查看 GitHub Actions 日志\"}")
-          echo "通知Cloudflare的回调HTTP状态码：$status_code"
+            -H "X-Render-Secret: $RENDER_SECRET" \
+            -d "{\"task_id\": \"$TASK_ID\"${RUN_JSON}, \"status\": \"$STATUS\", \"error\": \"$ERR\"}")
+          curl_exit=$?
+          set -e
+          echo "通知Cloudflare的回调HTTP状态码：$status_code（curl exit=$curl_exit）"
+          if [ -f /tmp/cb_body ]; then echo "回调响应：$(head -c 300 /tmp/cb_body)"; fi
+          if [ "$status_code" = "301" ] || [ "$status_code" = "302" ] || [ "$status_code" = "303" ] || [ "$status_code" = "307" ] || [ "$status_code" = "308" ]; then
+            echo "PAGES_BASE_URL 发生重定向，请把 GitHub Secret 改成最终 https 地址。本次未能同步状态。"
+          fi

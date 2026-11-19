@@ -7,6 +7,11 @@ on:
         description: '要生成的海报任务ID'
         required: true
         type: string
+      run_id:
+        description: '本次生成的回调幂等ID，用于忽略被取消的旧任务回调'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   generate:
@@ -37,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-poster-${{ runner.os }}-v1
+          key: apt-ffmpeg-noto-ubuntu-v1
 
       - name: 安装依赖（ffmpeg + 中文字体 + Pillow + 二维码库）
         run: |
@@ -48,19 +53,23 @@ jobs:
       - name: 下载海报标题艺术字体（站酷快乐体，Google Fonts官方OFL开源协议分发，免费商用）
         run: |
           mkdir -p fonts
-          curl -sL --fail -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf"
+          curl -sL --fail --retry 2 --max-time 30 -o fonts/ZCOOLKuaiLe-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf" || echo "WARN: 快乐体下载失败，将回退系统字体"
 
       - name: 下载"诗意品牌版"专用字体库（5款，同一个Google Fonts官方OFL开源协议家族，免费商用）
         run: |
-          curl -sL --fail -o fonts/ZCOOLXiaoWei-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf"
-          curl -sL --fail -o fonts/MaShanZheng-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf"
-          curl -sL --fail -o fonts/ZhiMangXing-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf"
-          curl -sL --fail -o fonts/LongCang-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf"
-          curl -sL --fail -o fonts/LiuJianMaoCao-Regular.ttf "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf"
+          download_font() {
+            curl -sL --fail --retry 2 --max-time 30 -o "$2" "$1" || echo "WARN: 未能下载 $2，将回退系统字体"
+          }
+          download_font "https://github.com/google/fonts/raw/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf" fonts/ZCOOLXiaoWei-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/mashanzheng/MaShanZheng-Regular.ttf" fonts/MaShanZheng-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/zhimangxing/ZhiMangXing-Regular.ttf" fonts/ZhiMangXing-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/longcang/LongCang-Regular.ttf" fonts/LongCang-Regular.ttf
+          download_font "https://github.com/google/fonts/raw/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf" fonts/LiuJianMaoCao-Regular.ttf
 
       - name: 生成海报
         env:
           POSTER_ID: ${{ inputs.poster_id }}
+          RUN_ID: ${{ inputs.run_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -75,16 +84,37 @@ jobs:
         if: failure() || cancelled()
         env:
           POSTER_ID: ${{ inputs.poster_id }}
+          RUN_ID: ${{ inputs.run_id }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           RENDER_SECRET: ${{ secrets.RENDER_SECRET }}
         run: |
-          # v273.24：这一步之前用的是裸curl，遇到301/302重定向（比如PAGES_BASE_URL这个
-          # 密钥填的域名跟Cloudflare那边认定的规范网址不完全一致，被自动跳转了一下）就会
-          # 直接把跳转页面的HTML内容当成"响应"收下，实际上根本没请求到真正的回调接口，
-          # 数据库里这条任务的状态永远不会被更新成"失败/已取消"，网页上会一直显示"生成中"，
-          # 明明任务早就没了却看不出来。加上-L让curl自动跟着跳转走完，同时把最终的HTTP状态码
-          # 打印到日志里，方便以后再遇到类似情况一眼就能看出这一步到底有没有真的通知成功。
-          status_code=$(curl -s -L -o /dev/null -w "%{http_code}" -X POST "$PAGES_BASE_URL/api/poster-callback" \
+          # v273.25：不再用 -L 跟随 301/302。curl 跟随跳转会把 POST 变成 GET，状态同步会失败。
+          BASE="${PAGES_BASE_URL:-}"
+          BASE="${BASE%/}"
+          case "$BASE" in
+            http://*) BASE="https://${BASE#http://}" ;;
+            https://*) ;;
+            *) BASE="https://$BASE" ;;
+          esac
+          STATUS="failed"
+          ERR="海报生成步骤执行失败，请查看 GitHub Actions 日志"
+          if [ "${{ job.status }}" = "cancelled" ]; then
+            STATUS="cancelled"
+            ERR="海报任务被取消或超时（若已重新触发，这次通知会被忽略）"
+          fi
+          RUN_JSON=""
+          if [ -n "${RUN_ID}" ]; then
+            RUN_JSON=", \"run_id\": \"${RUN_ID}\""
+          fi
+          set +e
+          status_code=$(curl -sS --max-redirs 0 -o /tmp/cb_body -w "%{http_code}" -X POST "$BASE/api/poster-callback" \
             -H "Content-Type: application/json" \
-            -d "{\"poster_id\": \"$POSTER_ID\", \"secret\": \"$RENDER_SECRET\", \"status\": \"failed\", \"error\": \"海报生成步骤执行失败，请查看 GitHub Actions 日志\"}")
-          echo "通知Cloudflare的回调HTTP状态码：$status_code"
+            -H "X-Render-Secret: $RENDER_SECRET" \
+            -d "{\"poster_id\": \"$POSTER_ID\"${RUN_JSON}, \"status\": \"$STATUS\", \"error\": \"$ERR\"}")
+          curl_exit=$?
+          set -e
+          echo "通知Cloudflare的回调HTTP状态码：$status_code（curl exit=$curl_exit）"
+          if [ -f /tmp/cb_body ]; then echo "回调响应：$(head -c 300 /tmp/cb_body)"; fi
+          if [ "$status_code" = "301" ] || [ "$status_code" = "302" ] || [ "$status_code" = "303" ] || [ "$status_code" = "307" ] || [ "$status_code" = "308" ]; then
+            echo "PAGES_BASE_URL 发生重定向，请把 GitHub Secret 改成最终 https 地址。本次未能同步状态。"
+          fi
