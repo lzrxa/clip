@@ -144,11 +144,13 @@ def recognize_scene(frame_path):
     这里换成智谱的免费图片理解模型GLM-4V-Flash——跟这套系统其它地方（脚本生成、素材翻译）
     统一用智谱做主力AI服务商。需要在这个GitHub Actions仓库的secrets里配置好ZHIPU_API_KEY
     （在Cloudflare Pages那边"系统设置→API密钥管理"填的密钥，不会自动同步到这里，需要在
-    GitHub仓库的Settings→Secrets单独配一份同样的值）。免费接口有请求频率限制，遇到限流
+    GitHub仓库的Settings→Secrets单独配一份同样的值）。可用可选 Secret ZHIPU_VISION_MODEL
+    覆盖模型 ID，默认使用官方当前免费视觉模型 glm-4.6v-flash。免费接口有请求频率限制，遇到限流
     （429）会等几秒重试一次，还是不行就跳过这一帧，不影响其它片段继续处理。"""
     zhipu_key = os.environ.get("ZHIPU_API_KEY")
     if not zhipu_key:
         return None
+    vision_model = (os.environ.get("ZHIPU_VISION_MODEL") or "glm-4.6v-flash").strip() or "glm-4.6v-flash"
     with open(frame_path, "rb") as f:
         image_base64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -173,26 +175,63 @@ def recognize_scene(frame_path):
         ]},
     ]
 
-    def do_request():
+    def do_request(payload):
         return requests.post(
             "https://open.bigmodel.cn/api/paas/v4/chat/completions",
             headers={"Authorization": f"Bearer {zhipu_key}", "Content-Type": "application/json"},
-            json={"model": "glm-4v-flash", "max_tokens": 300, "messages": messages},
+            json=payload,
             timeout=60,
         )
 
+    def extract_final_text(data):
+        message = ((data or {}).get("choices") or [{}])[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(part.get("text") or "" for part in content if isinstance(part, dict))
+        content = (content or "").strip()
+        if content:
+            return content
+        reasoning = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
+        # 思考过程不能直接当结果；只有里面已经出现 JSON 时才提取
+        if "{" in reasoning and "}" in reasoning:
+            return reasoning
+        return ""
+
+    def clean_json_text(raw):
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw or "", flags=re.I)
+        cleaned = cleaned.strip()
+        fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, flags=re.I)
+        if fence:
+            cleaned = fence.group(1).strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            cleaned = cleaned[start:end + 1]
+        return cleaned
+
+    full_payload = {
+        "model": vision_model,
+        "max_tokens": 800,
+        "messages": messages,
+        "thinking": {"type": "disabled"},
+    }
+    minimal_payload = {"model": vision_model, "max_tokens": 800, "messages": messages}
+
     try:
-        resp = do_request()
+        used_payload = full_payload
+        resp = do_request(used_payload)
+        if resp.status_code in (400, 422):
+            used_payload = minimal_payload
+            resp = do_request(used_payload)
         if resp.status_code == 429:
             time.sleep(3)
-            resp = do_request()
+            resp = do_request(used_payload)
         resp.raise_for_status()
         data = resp.json()
-        text = data["choices"][0]["message"]["content"]
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(json)?|```$", "", cleaned.strip(), flags=re.M).strip()
-        return json.loads(cleaned)
+        raw_text = extract_final_text(data)
+        if not raw_text:
+            raise ValueError("AI 返回内容为空")
+        return json.loads(clean_json_text(raw_text))
     except Exception as e:
         print("AI识别这一帧失败，跳过这个片段：", e)
         return None
