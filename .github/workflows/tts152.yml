@@ -1,0 +1,34 @@
+name: Daka standalone speech 152
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Opaque task UUID only - never pass speech text here
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  speech:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: daka-tts152-${{ inputs.job_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check audio decoder and install published client
+        run: |
+          ffmpeg -version >/dev/null
+          python -m pip install --quiet --only-binary=:all: -r tts152_backend/requirements.txt
+      - name: Generate private standalone speech
+        env:
+          TTS_API_BASE: ${{ vars.TTS_API_BASE }}
+          TTS_RENDER_SECRET: ${{ secrets.TTS_RENDER_SECRET }}
+          TTS_JOB_ID: ${{ inputs.job_id }}
+        run: python tts152_backend/runner.py
