@@ -21,18 +21,68 @@ RATE = 24000
 MAX_FRAMES = RATE * 300
 
 class SafeError(Exception):
-    def __init__(self, code, status=None):
+    def __init__(self, code, status=None, response_info=None):
         self.code, self.status = code, status
+        self.response_info = response_info
         super().__init__(code)
 
 class JobStopped(SafeError):
     pass
 
+def response_info(headers, raw):
+    """Classify bounded responses; never retain/return raw headers, body, URL or text."""
+    ctype = (headers.get("content-type", "") if headers else "").lower()
+    kind = "json" if "json" in ctype else "html" if "html" in ctype else "text" if ctype.startswith("text/") else "other"
+    low = raw.lower()
+    challenge = bool(headers and headers.get("cf-mitigated", "").lower() == "challenge")
+    challenge = challenge or (kind == "html" and any(x in low for x in (b"cf-chl-", b"/cdn-cgi/challenge-platform/")))
+    source, service = "unknown", "none"
+    known = {
+        "Unauthorized": ("renderer_marker", "AUTH_REJECTED"),
+        "Invalid lease": ("renderer_marker", "LEASE_REJECTED"),
+        "Job unavailable or already claimed": ("renderer_marker", "JOB_UNAVAILABLE"),
+        "Renderer request failed": ("renderer_marker", "RENDERER_ERROR"),
+        "非法来源": ("browser_guard_marker", "BROWSER_ORIGIN_REJECTED"),
+        "登录已过期，请重新登录": ("browser_guard_marker", "BROWSER_SESSION_REQUIRED"),
+        "请先登录": ("browser_guard_marker", "BROWSER_SESSION_REQUIRED"),
+        "没有音频工具权限": ("browser_guard_marker", "BROWSER_AUDIO_PERMISSION"),
+    }
+    try:
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            marker = value.get("error")
+            if isinstance(marker, str):
+                source, service = known.get(marker, (source, service))
+            if value.get("code") == "PIN_SETUP_REQUIRED":
+                source, service = "browser_guard_marker", "BROWSER_PIN_SETUP"
+    except Exception:
+        pass
+    if challenge:
+        source = "cf_challenge_marker"
+    version = headers.get("x-app-version", "") if headers else ""
+    version = version if re.fullmatch(r"v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,5}", version) else "absent_or_other"
+    return {"source": source, "format": kind, "cf_challenge": challenge,
+            "cf_ray_present": bool(headers and headers.get("cf-ray")),
+            "service": service, "app_version": version}
+
+
 def report(error):
-    # Only internally selected codes and numeric HTTP statuses; never stringify exceptions.
+    # Only internally selected codes, classifications and numeric HTTP statuses.
     if isinstance(error, SafeError) and re.fullmatch(r"[A-Z_]{3,50}", error.code):
         suffix = f" http={error.status}" if type(error.status) is int and 100 <= error.status <= 599 else ""
         print("TTS152 code=" + error.code + suffix)
+        info = error.response_info
+        if isinstance(info, dict):
+            # Regenerate from a fixed-key schema; never stringify arbitrary response fields.
+            sources = {"unknown", "renderer_marker", "browser_guard_marker", "cf_challenge_marker"}
+            kinds = {"json", "html", "text", "other"}
+            services = {"none", "AUTH_REJECTED", "LEASE_REJECTED", "JOB_UNAVAILABLE", "RENDERER_ERROR", "BROWSER_ORIGIN_REJECTED", "BROWSER_SESSION_REQUIRED", "BROWSER_AUDIO_PERMISSION", "BROWSER_PIN_SETUP"}
+            source = info.get("source") if info.get("source") in sources else "unknown"
+            kind = info.get("format") if info.get("format") in kinds else "other"
+            service = info.get("service") if info.get("service") in services else "none"
+            version = info.get("app_version", "")
+            version = version if isinstance(version, str) and re.fullmatch(r"v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,5}", version) else "absent_or_other"
+            print(f"TTS152 response source={source} format={kind} service={service} app={version} cf_challenge={info.get('cf_challenge') is True} cf_ray_present={info.get('cf_ray_present') is True}")
     else:
         print("TTS152 code=UNEXPECTED")
 
@@ -69,10 +119,15 @@ class API:
                     raise ValueError()
                 return value
         except urllib.error.HTTPError as error:
-            error.close()
+            try:
+                info = response_info(error.headers, error.read(8192))
+            except Exception:
+                info = None
+            finally:
+                error.close()
             if error.code in (409, 410):
-                raise JobStopped(stage + "_STOPPED", error.code) from None
-            raise SafeError(stage + "_HTTP", error.code) from None
+                raise JobStopped(stage + "_STOPPED", error.code, info) from None
+            raise SafeError(stage + "_HTTP", error.code, info) from None
         except (json.JSONDecodeError, UnicodeError, ValueError):
             raise SafeError(stage + "_RESPONSE") from None
         except Exception:
