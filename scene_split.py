@@ -21,15 +21,13 @@ from botocore.config import Config
 # 3. 对"有实际内容"的片段，同时截出这一段对应的小视频文件+一张代表图片，各自上传到R2，
 #    作为两条独立的素材记录（一条视频、一条图片）导入素材库，标签用AI识别出来的地点/内容
 
+from callback_util import normalize_pages_base_url, post_json_callback
+
 JOB_ID = os.environ["JOB_ID"]
 SOURCE_KEY = os.environ["SOURCE_KEY"]
-_raw_base = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
-if _raw_base.startswith("http://"):
-    _raw_base = "https://" + _raw_base[len("http://"):]
-elif not _raw_base.startswith("https://"):
-    _raw_base = "https://" + _raw_base
-PAGES_BASE_URL = _raw_base
+PAGES_BASE_URL = normalize_pages_base_url(os.environ["PAGES_BASE_URL"])
 RENDER_SECRET = os.environ["RENDER_SECRET"].strip()
+RUN_ID = (os.environ.get("RUN_ID") or "").strip()
 R2_ACCOUNT_ID = os.environ["R2_ACCOUNT_ID"]
 R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
 R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]
@@ -40,6 +38,14 @@ TASK_DOMAIN = os.environ.get("TASK_DOMAIN") or "travel"
 TASK_REGION = os.environ.get("TASK_REGION") or ""
 
 WORKDIR = "work"
+
+def is_safe_r2_key(key):
+    if not key or not isinstance(key, str):
+        return False
+    if ".." in key or key.startswith("/") or "\\" in key or chr(0) in key:
+        return False
+    return key.startswith("assets/") or key.startswith("videos/")
+
 # 场景切换检测的敏感度：数值越低越容易被判定成"切换了一个新场景"（片段会切得更碎），
 # 数值越高只有变化很剧烈的硬切才会被抓到。0.3是ffmpeg社区比较常用的经验值，兼顾了
 # "不要切得太碎"和"不要漏掉明显的镜头切换"
@@ -71,18 +77,15 @@ def redact_urls(text):
 
 
 def callback(status, results=None, error=None):
-    payload = {"job_id": JOB_ID, "secret": RENDER_SECRET, "status": status}
+    payload = {"job_id": JOB_ID, "status": status}
+    if RUN_ID:
+        payload["run_id"] = RUN_ID
     if results is not None:
         payload["results"] = results
     if error:
         payload["error"] = redact_urls(error)[:2000]
     callback_url = f"{PAGES_BASE_URL}/api/scene-split-callback"
-    try:
-        resp = requests.post(callback_url, json=payload, timeout=30)
-        print("回调地址：", callback_url, "状态：", resp.status_code, resp.text[:300])
-        resp.raise_for_status()
-    except Exception as e:
-        print("回调失败:", e)
+    post_json_callback(callback_url, payload, RENDER_SECRET)
 
 
 def get_video_duration(path):
@@ -199,6 +202,8 @@ def main():
     os.makedirs(WORKDIR, exist_ok=True)
     source_path = f"{WORKDIR}/source.mp4"
 
+    if not is_safe_r2_key(SOURCE_KEY):
+        raise RuntimeError("源视频 key 不合法，只能拆分 assets/ 或 videos/ 下的对象")
     print(f"下载源视频：{SOURCE_KEY}")
     s3 = s3_client()
     s3.download_file(R2_BUCKET_NAME, SOURCE_KEY, source_path)

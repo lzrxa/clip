@@ -15,14 +15,17 @@ except Exception:
 import boto3
 from botocore.config import Config
 
+from callback_util import (
+    normalize_pages_base_url,
+    post_json_callback,
+    fetch_url_with_retry,
+    redact_urls as redact_log_urls,
+)
+
 TASK_ID = os.environ["TASK_ID"]
-_raw_base = os.environ["PAGES_BASE_URL"].strip().rstrip("/")
-if _raw_base.startswith("http://"):
-    _raw_base = "https://" + _raw_base[len("http://"):]
-elif not _raw_base.startswith("https://"):
-    _raw_base = "https://" + _raw_base
-PAGES_BASE_URL = _raw_base
+PAGES_BASE_URL = normalize_pages_base_url(os.environ["PAGES_BASE_URL"])
 RENDER_SECRET = os.environ["RENDER_SECRET"].strip()
+RUN_ID = (os.environ.get("RUN_ID") or "").strip()
 R2_ACCOUNT_ID = os.environ["R2_ACCOUNT_ID"]
 R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
 R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]
@@ -44,22 +47,12 @@ def run(cmd):
 # 读超时是正常网络抖动，不代表文件真的取不到——重试几次，中间等一下，能大幅减少
 # 这种偶发抖动导致整个任务失败的情况。真的连续失败很多次，才说明不是"抖一下"这种
 # 情况，让异常正常抛出去
-def fetch_with_retry(url, timeout=60, max_retries=3, backoff_base=3):
-    last_error = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.get(url, timeout=timeout)
-            resp.raise_for_status()
-            return resp
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            last_error = e
-            if attempt < max_retries:
-                wait_sec = backoff_base * attempt
-                print(f"下载失败（第{attempt}次，{type(e).__name__}），{wait_sec}秒后重试：{url}")
-                time.sleep(wait_sec)
-            else:
-                print(f"下载失败，已重试{max_retries}次仍未成功：{url}")
-    raise last_error
+def fetch_with_retry(url, timeout=60, max_retries=3, backoff_base=3, headers=None, allow_redirects=True):
+    # 素材下载允许跟随跳转（CDN/对象存储常见）；拉清单等本站 API 由调用方关闭跳转。
+    return fetch_url_with_retry(
+        url, timeout=timeout, max_retries=max_retries, backoff_base=backoff_base,
+        headers=headers, allow_redirects=allow_redirects,
+    )
 
 
 def s3_client():
@@ -86,7 +79,7 @@ def redact_urls(text):
 
 
 def callback(status, video_url=None, cover_url=None, cover_options=None, error=None, render_metrics=None):
-    payload = {"task_id": TASK_ID, "secret": RENDER_SECRET, "status": status}
+    payload = {"task_id": TASK_ID, "status": status}
     if video_url:
         payload["video_url"] = video_url
     if cover_url:
@@ -98,29 +91,11 @@ def callback(status, video_url=None, cover_url=None, cover_options=None, error=N
     if render_metrics:
         payload["render_metrics"] = render_metrics
 
+    if RUN_ID:
+        payload["run_id"] = RUN_ID
     callback_url = f"{PAGES_BASE_URL}/api/render-callback"
-    # 回调是整个渲染任务唯一一次"告诉后端结果"的机会——不管成功还是失败，只要这一次
-    # 请求本身失败了（网络抖动、R2/Worker那边偶尔慢一拍），任务在数据库里就会永远停在
-    # "渲染中"，前端会一直显示进度条转下去，实际上GitHub Actions这边早就跑完了，只是
-    # 结果没能传回去。这里最多重试3次，覆盖偶发的网络抖动
-    last_error = None
-    for attempt in range(1, 4):
-        try:
-            resp = requests.post(callback_url, json=payload, timeout=30)
-            if resp.history:
-                print("警告：这次请求发生了跳转，PAGES_BASE_URL可能配置有误：",
-                      " -> ".join(str(r.url) for r in resp.history) + " -> " + resp.url)
-            print("回调地址：", callback_url)
-            print("回调 HTTP 状态：", resp.status_code)
-            print("回调响应内容：", resp.text[:500])
-            resp.raise_for_status()
-            return
-        except Exception as e:
-            last_error = e
-            print(f"回调失败（第{attempt}次）:", e)
-            if attempt < 3:
-                time.sleep(5 * attempt)
-    print("回调重试3次仍未成功，任务状态可能无法在网页上正确显示：", last_error)
+    # 回调是整个渲染任务唯一一次"告诉后端结果"的机会。密钥走请求头，不跟随重定向。
+    post_json_callback(callback_url, payload, RENDER_SECRET)
 
 
 # ==================== 字幕生成：简洁样式，颜色/字号/位置/粗细都可由用户在网页里选择 ====================
@@ -781,8 +756,10 @@ def fetch_keyword_highlighted_chunks(chunks, batch_size=60):
         try:
             resp = requests.post(
                 f"{PAGES_BASE_URL}/api/subtitle-keyword-highlight",
-                json={"secret": RENDER_SECRET, "sentences": sentences},
+                json={"sentences": sentences, **({"run_id": RUN_ID} if RUN_ID else {})},
+                headers={"X-Render-Secret": RENDER_SECRET, "Content-Type": "application/json"},
                 timeout=60,
+                allow_redirects=False,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -1219,10 +1196,17 @@ def main():
     # 用的是同一套"网络抖动不代表真的不行，退避重试几次"的思路，这里也改成用
     # fetch_with_retry，超时放宽到90秒、失败自动重试，不再是一次读超时就直接判定
     # 整条视频生成失败
-    manifest_url = f"{PAGES_BASE_URL}/api/render-manifest?" + urllib.parse.urlencode(
-        {"task_id": TASK_ID, "secret": RENDER_SECRET}
+    manifest_params = {"task_id": TASK_ID}
+    if RUN_ID:
+        manifest_params["run_id"] = RUN_ID
+    manifest_url = f"{PAGES_BASE_URL}/api/render-manifest?" + urllib.parse.urlencode(manifest_params)
+    resp = fetch_with_retry(
+        manifest_url,
+        timeout=90,
+        max_retries=2,
+        headers={"X-Render-Secret": RENDER_SECRET},
+        allow_redirects=False,
     )
-    resp = fetch_with_retry(manifest_url, timeout=90, max_retries=2)
     manifest = resp.json()
     if not manifest.get("ok"):
         raise RuntimeError(manifest.get("message", "获取任务清单失败"))
